@@ -165,12 +165,14 @@ export function OwnerWorkspace({
     }
   }, []);
 
-  // Option 1: Smart visibility-aware 10s pulse check (only fetches full snapshot when DB changed)
+  // Option 1 (Fast): Visibility-aware 3s pulse check with overlap guard
   useEffect(() => {
     const controller = new AbortController();
+    let pulseBusy = false;
 
     async function checkPulse(forceFullOnFirst = false) {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || pulseBusy) return;
+      pulseBusy = true;
       try {
         const pulseRes = await fetch("/api/owner/pulse", {
           cache: "no-store",
@@ -198,6 +200,8 @@ export function OwnerWorkspace({
         setAuditRefreshSignal((prev) => prev + 1);
       } catch {
         // Ignore abort / transient background network errors
+      } finally {
+        pulseBusy = false;
       }
     }
 
@@ -207,7 +211,7 @@ export function OwnerWorkspace({
     const intervalId = liveSync
       ? window.setInterval(() => {
           void checkPulse(false);
-        }, 10_000)
+        }, 3_000)
       : null;
 
     function handleResume() {
@@ -383,7 +387,7 @@ export function OwnerWorkspace({
                 liveSync ? "animate-pulse bg-white" : "bg-[#A1A1AA]"
               }`}
             />
-            {liveSync ? "Live 10s: ON" : "Live: Paused"}
+            {liveSync ? "Live 3s: ON" : "Live: Paused"}
           </button>
 
           <button

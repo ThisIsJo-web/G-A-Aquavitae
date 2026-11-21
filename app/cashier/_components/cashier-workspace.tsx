@@ -161,14 +161,16 @@ export function CashierWorkspace({
     }
   }, []);
 
-  // Option 1: Lightweight 15s check for Owner Review approvals while tab is visible
+  // Option 1 (Fast): Lightweight 3s check for Owner Review approvals while tab is visible
   useEffect(() => {
     if (corrections.pendingCount === 0 && activeTab !== "reviews") return;
 
     const controller = new AbortController();
+    let pollBusy = false;
 
     async function pollOwnerReviews() {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || pollBusy) return;
+      pollBusy = true;
       try {
         const res = await fetch("/api/cashier/corrections", {
           cache: "no-store",
@@ -189,12 +191,14 @@ export function CashierWorkspace({
         }
       } catch {
         // Ignore abort / transient errors
+      } finally {
+        pollBusy = false;
       }
     }
 
     const intervalId = window.setInterval(() => {
       void pollOwnerReviews();
-    }, 15_000);
+    }, 3_000);
 
     function handleVisible() {
       if (document.visibilityState === "visible") {

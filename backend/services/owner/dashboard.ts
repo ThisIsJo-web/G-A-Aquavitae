@@ -811,108 +811,118 @@ export interface OwnerPulseSnapshot {
 
 /**
  * Ultra-lightweight change-detection pulse for /api/owner/pulse.
- * Checks only the newest timestamp per station table (LIMIT 1 each) so /owner
- * only fetches the full dashboard when something actually changed.
+ * Because every money/supervision action appends a monotonic seq_no to
+ * financial_audit_logs, checking just 4 tiny indexed queries covers all
+ * sales, deliveries, vendo, expenses, shifts, corrections, stock, and customers.
  */
 export async function getOwnerPulse(
   ownerId: string
 ): Promise<OwnerPulseSnapshot> {
   const admin = createSupabaseAdminClient();
 
-  const [
-    posRes,
-    delRes,
-    venRes,
-    shiftRes,
-    expRes,
-    corrLatestRes,
-    corrPendingRes,
-    stockLogRes,
-    auditLatestRes,
-  ] = await Promise.all([
-    admin
-      .from("pos_sales")
-      .select("created_at, status, payment_method")
-      .eq("owner_id", ownerId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .from("deliveries")
-      .select("updated_at")
-      .eq("owner_id", ownerId)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .from("vendo_collections")
-      .select("created_at, amount")
-      .eq("owner_id", ownerId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .from("shift_closings")
-      .select("closed_at, actual_cash")
-      .eq("owner_id", ownerId)
-      .order("closed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .from("station_expenses")
-      .select("created_at")
-      .eq("owner_id", ownerId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .from("correction_requests")
-      .select("created_at, reviewed_at, status")
-      .eq("owner_id", ownerId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .from("correction_requests")
-      .select("id", { count: "exact", head: true })
-      .eq("owner_id", ownerId)
-      .eq("status", "pending"),
-    admin
-      .from("gallon_inventory_logs")
-      .select("created_at")
-      .eq("owner_id", ownerId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .from("financial_audit_logs")
-      .select("seq_no")
-      .eq("owner_id", ownerId)
-      .order("seq_no", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-  ]);
+  const [auditLatestRes, corrPendingRes, stockLogRes, customerRes] =
+    await Promise.all([
+      admin
+        .from("financial_audit_logs")
+        .select("seq_no, created_at")
+        .eq("owner_id", ownerId)
+        .order("seq_no", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      admin
+        .from("correction_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("owner_id", ownerId)
+        .eq("status", "pending"),
+      admin
+        .from("gallon_inventory_logs")
+        .select("created_at")
+        .eq("owner_id", ownerId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      admin
+        .from("delivery_customers")
+        .select("updated_at")
+        .eq("owner_id", ownerId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
 
   const pendingCorrections = corrPendingRes.error
     ? 0
     : (corrPendingRes.count ?? 0);
 
+  // Fallback to direct table checks only if financial_audit_logs isn't created yet
+  if (auditLatestRes.error) {
+    const [posRes, delRes, venRes, shiftRes, expRes] = await Promise.all([
+      admin
+        .from("pos_sales")
+        .select("created_at, status, payment_method")
+        .eq("owner_id", ownerId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      admin
+        .from("deliveries")
+        .select("updated_at")
+        .eq("owner_id", ownerId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      admin
+        .from("vendo_collections")
+        .select("created_at, amount")
+        .eq("owner_id", ownerId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      admin
+        .from("shift_closings")
+        .select("closed_at, actual_cash")
+        .eq("owner_id", ownerId)
+        .order("closed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      admin
+        .from("station_expenses")
+        .select("created_at")
+        .eq("owner_id", ownerId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const fallbackVersion = [
+      posRes.data
+        ? `${posRes.data.created_at}:${posRes.data.status}:${posRes.data.payment_method}`
+        : "0",
+      delRes.data?.updated_at ?? "0",
+      venRes.data ? `${venRes.data.created_at}:${venRes.data.amount}` : "0",
+      shiftRes.data
+        ? `${shiftRes.data.closed_at}:${shiftRes.data.actual_cash}`
+        : "0",
+      expRes.data?.created_at ?? "0",
+      String(pendingCorrections),
+      stockLogRes.data?.created_at ?? "0",
+      customerRes.data?.updated_at ?? "0",
+    ].join("|");
+
+    return {
+      version: fallbackVersion,
+      pendingCorrections,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
   const version = [
-    posRes.data
-      ? `${posRes.data.created_at}:${posRes.data.status}:${posRes.data.payment_method}`
-      : "0",
-    delRes.data?.updated_at ?? "0",
-    venRes.data ? `${venRes.data.created_at}:${venRes.data.amount}` : "0",
-    shiftRes.data
-      ? `${shiftRes.data.closed_at}:${shiftRes.data.actual_cash}`
-      : "0",
-    expRes.data?.created_at ?? "0",
-    corrLatestRes.data
-      ? `${corrLatestRes.data.created_at}:${corrLatestRes.data.reviewed_at ?? ""}:${corrLatestRes.data.status}`
+    auditLatestRes.data
+      ? `${auditLatestRes.data.seq_no}:${auditLatestRes.data.created_at}`
       : "0",
     String(pendingCorrections),
     stockLogRes.data?.created_at ?? "0",
-    auditLatestRes.error ? "0" : String(auditLatestRes.data?.seq_no ?? 0),
+    customerRes.data?.updated_at ?? "0",
   ].join("|");
 
   return {
