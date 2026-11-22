@@ -10,7 +10,7 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "AquaVitae",
+  title: "G & A Aqua Vitae",
   description: "Water refilling station operations & system dashboard",
 };
 

@@ -426,7 +426,7 @@ export function serializeErrorLogsJson(
 ): string {
   return JSON.stringify(
     {
-      application: "AquaVitae",
+      application: "G & A Aqua Vitae",
       exportedAt: meta.exportedAt,
       groupBy: meta.groupBy,
       section: meta.section,
@@ -452,7 +452,7 @@ export function serializeErrorLogsTxt(
   const subDivider = "-".repeat(72);
   const lines: string[] = [
     divider,
-    "AQUAVITAE SYSTEM ERROR LOGS REPORT",
+    "G & A AQUA VITAE SYSTEM ERROR LOGS REPORT",
     divider,
     `Exported At : ${meta.exportedAt}`,
     `Group Mode  : ${meta.groupBy}`,
@@ -495,7 +495,7 @@ export function serializeErrorLogsTxt(
 
 export function serializeErrorLogsLog(logs: SystemErrorLog[]): string {
   if (logs.length === 0) {
-    return `# AquaVitae Error Log Stream — 0 matching entries (${new Date().toISOString()})\n`;
+    return `# G & A Aqua Vitae Error Log Stream — 0 matching entries (${new Date().toISOString()})\n`;
   }
 
   const lines: string[] = [];

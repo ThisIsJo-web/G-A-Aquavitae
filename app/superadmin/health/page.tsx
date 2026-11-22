@@ -11,7 +11,7 @@ import { HealthDashboard } from "./_components/health-dashboard";
 import { HealthSkeleton } from "./_components/health-skeleton";
 
 export const metadata: Metadata = {
-  title: "System Health | AquaVitae Superadmin",
+  title: "System Health | G & A Aqua Vitae",
   description: "Superadmin-exclusive system health and error logs dashboard",
 };
 

@@ -948,7 +948,7 @@ export function formatAuditLedgerExport(
   }
 
   const lines = [
-    `AQUAVITAE FORENSIC FINANCIAL AUDIT LEDGER (${result.fromDate} to ${result.toDate})`,
+    `G & A AQUA VITAE FORENSIC FINANCIAL AUDIT LEDGER (${result.fromDate} to ${result.toDate})`,
     `Chain Integrity: ${result.chain.verified ? "VERIFIED INTACT" : "WARNING - BROKEN CHAIN"} (${result.chain.totalEntries} total entries)`,
     `Latest Hash:     ${result.chain.latestHash ?? "NONE"}`,
     `Reconciliation:  ${result.reconciliation.isBalanced ? "BALANCED (PHP 0.00 DIFF)" : `DIFF Gross ${formatCentavosPHP(result.reconciliation.grossDiffCentavos)} / Expense ${formatCentavosPHP(result.reconciliation.expenseDiffCentavos)}`}`,

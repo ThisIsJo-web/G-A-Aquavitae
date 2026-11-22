@@ -177,7 +177,7 @@ export async function enrollSuperadminTotp(): Promise<{
 
   const { data, error } = await supabase.auth.mfa.enroll({
     factorType: "totp",
-    friendlyName: "AquaVitae Integrity Gate",
+    friendlyName: "G & A Aqua Vitae Integrity Gate",
   });
 
   if (error || !data) {

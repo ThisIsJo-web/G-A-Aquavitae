@@ -11,7 +11,7 @@ import { OwnerSkeleton } from "./_components/owner-skeleton";
 import { OwnerWorkspace } from "./_components/owner-workspace";
 
 export const metadata: Metadata = {
-  title: "Owner Dashboard | AquaVitae",
+  title: "Owner Dashboard | G & A Aqua Vitae",
   description:
     "Station owner analytics: sales, gallons sold, unpaid balances, expenses, containers, and staff management",
 };

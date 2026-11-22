@@ -80,8 +80,8 @@ export function AppShell({
               <Droplets className="h-5 w-5" strokeWidth={2} />
             </span>
             <div>
-              <div className="text-base font-bold tracking-tight text-[#111111]">
-                AquaVitae
+              <div className="text-[15px] font-bold leading-tight tracking-tight text-[#111111]">
+                G &amp; A Aqua Vitae
               </div>
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
                 {roleLabel}

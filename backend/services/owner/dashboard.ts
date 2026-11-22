@@ -1129,7 +1129,7 @@ export function formatOwnerReportExport(
   }
 
   const lines: string[] = [
-    `AQUAVITAE OWNER REPORT (${snapshot.startDate} to ${snapshot.endDate})`,
+    `G & A AQUA VITAE OWNER REPORT (${snapshot.startDate} to ${snapshot.endDate})`,
     `Generated: ${snapshot.generatedAt}`,
     "================================================================",
     `Total Sales:      PHP ${snapshot.quickStats.totalSales.toFixed(2)}`,

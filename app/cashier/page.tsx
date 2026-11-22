@@ -19,7 +19,7 @@ import { CashierWorkspace } from "./_components/cashier-workspace";
 import { SuperadminIntegrityGate } from "./_components/superadmin-integrity-gate";
 
 export const metadata: Metadata = {
-  title: "Cashier Station | AquaVitae",
+  title: "Cashier Station | G & A Aqua Vitae",
   description:
     "Walk-in POS, Deliveries & Rider Tally, Vendo Income, Gallon Inventory, and Closing Shift Daily Tally",
 };

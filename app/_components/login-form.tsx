@@ -131,7 +131,7 @@ export function LoginForm() {
         </span>
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-[#111111]">
-            AquaVitae
+            G &amp; A Aqua Vitae
           </h1>
           <p className="text-sm font-normal text-[#71717A]">
             Sign in to your station account
