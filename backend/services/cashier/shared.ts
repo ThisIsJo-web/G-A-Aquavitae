@@ -52,22 +52,37 @@ const DEFAULT_PRODUCTS = [
   {
     name: "Refill",
     category: "refill" as const,
-    gallon_type: null,
     unit_price: DEFAULT_REFILL_PRICE,
   },
   {
     name: "Gallon Filled with Water",
     category: "container" as const,
-    gallon_type: "slim" as const,
     unit_price: DEFAULT_GALLON_WITH_WATER_PRICE,
   },
 ];
 
+// Deduplicate concurrent ensureStationDefaults() calls per owner within the same Node process
+const inFlightDefaults = new Map<string, Promise<{ schemaMissing: boolean }>>();
+
 /**
- * Lazily seeds default walk-in products (Refill ₱20, Gallon w/ Water ₱160)
- * and initial slim/round stock rows for a station on first access.
+ * Lazily seeds default walk-in products (Refill ₱20, Gallon Filled with Water ₱160)
+ * and initial stock rows for a station on first access, protected against
+ * concurrent Promise.all race conditions.
  */
-export async function ensureStationDefaults(
+export function ensureStationDefaults(
+  ownerId: string
+): Promise<{ schemaMissing: boolean }> {
+  const existing = inFlightDefaults.get(ownerId);
+  if (existing) return existing;
+
+  const task = runEnsureStationDefaults(ownerId).finally(() => {
+    inFlightDefaults.delete(ownerId);
+  });
+  inFlightDefaults.set(ownerId, task);
+  return task;
+}
+
+async function runEnsureStationDefaults(
   ownerId: string
 ): Promise<{ schemaMissing: boolean }> {
   const admin = createSupabaseAdminClient();
@@ -75,7 +90,7 @@ export async function ensureStationDefaults(
   const [productsRes, stockRes] = await Promise.all([
     admin
       .from("pos_products")
-      .select("id", { count: "exact", head: true })
+      .select("name")
       .eq("owner_id", ownerId),
     admin
       .from("gallon_stock")
@@ -92,14 +107,29 @@ export async function ensureStationDefaults(
 
   const tasks: PromiseLike<unknown>[] = [];
 
-  if ((productsRes.count ?? 0) === 0) {
+  const existingNames = new Set(
+    (productsRes.data ?? []).map((p) => p.name.trim().toLowerCase())
+  );
+  const missingProducts = DEFAULT_PRODUCTS.filter(
+    (p) => !existingNames.has(p.name.toLowerCase())
+  );
+
+  if (missingProducts.length > 0) {
     tasks.push(
-      admin.from("pos_products").insert(
-        DEFAULT_PRODUCTS.map((p) => ({
+      (async () => {
+        const rows = missingProducts.map((p) => ({
           owner_id: ownerId,
           ...p,
-        }))
-      )
+        }));
+        const upsertRes = await admin
+          .from("pos_products")
+          .upsert(rows, { onConflict: "owner_id,name", ignoreDuplicates: true });
+
+        // Fallback if uq_pos_products_owner_name constraint (Section 12f) hasn't been applied yet
+        if (upsertRes.error?.code === "42P10") {
+          await admin.from("pos_products").insert(rows);
+        }
+      })()
     );
   }
 

@@ -938,3 +938,33 @@ create trigger trg_prevent_financial_audit_mutation
   before update or delete on public.financial_audit_logs
   for each row
   execute function public.prevent_financial_audit_mutation();
+
+-- ============================================================
+-- 12f. Deduplicate pos_products, Enforce Unique Name, Drop gallon_type
+-- ============================================================
+-- 1. Keep only the earliest row per (owner_id, name)
+delete from public.pos_products p
+using (
+  select id,
+         row_number() over (partition by owner_id, name order by created_at asc, id asc) as rn
+  from public.pos_products
+) dup
+where p.id = dup.id
+  and dup.rn > 1;
+
+-- 2. Prevent future duplicate POS products per station
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'uq_pos_products_owner_name'
+  ) then
+    alter table public.pos_products
+      add constraint uq_pos_products_owner_name unique (owner_id, name);
+  end if;
+end $$;
+
+-- 3. Remove unused gallon_type column from pos_products
+alter table public.pos_products
+  drop column if exists gallon_type;

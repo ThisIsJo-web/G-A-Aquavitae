@@ -202,7 +202,6 @@ export type Database = {
           owner_id: string;
           name: string;
           category: PosProductCategory;
-          gallon_type: GallonType | null;
           unit_price: number;
           is_active: boolean;
           created_at: string;
@@ -212,7 +211,6 @@ export type Database = {
           owner_id: string;
           name: string;
           category: PosProductCategory;
-          gallon_type?: GallonType | null;
           unit_price: number;
           is_active?: boolean;
           created_at?: string;
@@ -220,7 +218,6 @@ export type Database = {
         Update: {
           name?: string;
           category?: PosProductCategory;
-          gallon_type?: GallonType | null;
           unit_price?: number;
           is_active?: boolean;
         };

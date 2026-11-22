@@ -45,7 +45,6 @@ export interface PosProductDTO {
   id: string;
   name: string;
   category: PosProductCategory;
-  gallon_type: GallonType | null;
   unit_price: number;
   is_active: boolean;
 }

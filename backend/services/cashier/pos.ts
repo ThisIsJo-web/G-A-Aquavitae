@@ -166,13 +166,23 @@ export async function listPosOverview(
     }
   }
 
+  // Deduplicate active products by name (earliest row wins) as defense-in-depth
+  const seenNames = new Set<string>();
+  const uniqueProducts: PosProductRow[] = [];
+  for (const p of productsRes.data ?? []) {
+    const key = p.name.trim().toLowerCase();
+    if (seenNames.has(key)) continue;
+    seenNames.add(key);
+    uniqueProducts.push({
+      ...p,
+      unit_price: toNumber(p.unit_price),
+    });
+  }
+
   return {
     businessDate,
     schemaMissing: false,
-    products: (productsRes.data ?? []).map((p) => ({
-      ...p,
-      unit_price: toNumber(p.unit_price),
-    })),
+    products: uniqueProducts,
     sales,
     summary: {
       completedCount,
@@ -224,7 +234,7 @@ export async function createWalkInSale(
     product_id: string;
     product_name: string;
     category: PosProductRow["category"];
-    gallon_type: PosProductRow["gallon_type"];
+    gallon_type: null;
     quantity: number;
     unit_price: number;
     line_total: number;
@@ -249,7 +259,7 @@ export async function createWalkInSale(
       product_id: product.id,
       product_name: product.name,
       category: product.category,
-      gallon_type: product.gallon_type,
+      gallon_type: null,
       quantity: qty,
       unit_price: unitPrice,
       line_total: lineTotal,
@@ -327,13 +337,13 @@ export async function createWalkInSale(
     throw new AuthServiceError(itemsErr.message, 500);
   }
 
-  // Deduct station container stock when selling new "Gallon with Water" containers
+  // Deduct station container stock when selling new "Gallon Filled with Water" containers
   for (const item of preparedItems) {
-    if (item.category === "container" && item.gallon_type) {
+    if (item.category === "container") {
       await adjustGallonStock({
         ownerId,
         cashierId,
-        gallonType: item.gallon_type,
+        gallonType: "slim",
         movementType: "walkin_out",
         quantityDelta: -item.quantity,
         businessDate,

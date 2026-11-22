@@ -7,7 +7,10 @@ import { getCashierPageContext } from "@/backend/services/auth-guards";
 import { getDeliveriesOverview } from "@/backend/services/cashier/deliveries";
 import { getInventoryOverview } from "@/backend/services/cashier/inventory";
 import { listPosOverview } from "@/backend/services/cashier/pos";
-import { getTodayBusinessDate } from "@/backend/services/cashier/shared";
+import {
+  ensureStationDefaults,
+  getTodayBusinessDate,
+} from "@/backend/services/cashier/shared";
 import { getDailyShiftTally } from "@/backend/services/cashier/shift-closing";
 import { getVendoOverview } from "@/backend/services/cashier/vendo";
 import { listCorrectionRequests } from "@/backend/services/corrections";
@@ -67,6 +70,8 @@ async function CashierPageContent() {
   }
 
   const today = getTodayBusinessDate();
+  await ensureStationDefaults(ctx.tenantOwnerId);
+
   const [
     initialPos,
     initialDeliveries,
