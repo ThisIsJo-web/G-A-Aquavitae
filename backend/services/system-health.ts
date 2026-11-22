@@ -146,8 +146,8 @@ async function runPostgresQueryProbe(): Promise<ServiceProbe> {
     if (error) {
       return {
         id: "postgres-query",
-        name: "PostgreSQL Query Engine",
-        description: "Live indexed count query on public.profiles",
+        name: "Database",
+        description: "Live station records connectivity",
         status: "down",
         latencyMs,
         detail: error.message,
@@ -159,17 +159,17 @@ async function runPostgresQueryProbe(): Promise<ServiceProbe> {
 
     return {
       id: "postgres-query",
-      name: "PostgreSQL Query Engine",
-      description: "Live indexed count query on public.profiles",
+      name: "Database",
+      description: "Live station records connectivity",
       status,
       latencyMs,
-      detail: `${count ?? 0} profile record(s) verified`,
+      detail: `${count ?? 0} account(s) verified`,
     };
   } catch (error) {
     return {
       id: "postgres-query",
-      name: "PostgreSQL Query Engine",
-      description: "Live indexed count query on public.profiles",
+      name: "Database",
+      description: "Live station records connectivity",
       status: "down",
       latencyMs: Math.round(performance.now() - start),
       detail: error instanceof Error ? error.message : "Database query failed",
@@ -208,59 +208,12 @@ async function getErrorLogSummary(): Promise<ErrorLogSummary> {
   const admin = createSupabaseAdminClient();
   const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-  const [
-    totalRes,
-    unresolvedRes,
-    last24hRes,
-    criticalRes,
-    errorRes,
-    warningRes,
-    backendRes,
-    dbAuthRes,
-    frontendRes,
-  ] = await Promise.all([
-    admin.from("system_error_logs").select("id", { count: "exact", head: true }),
-    admin
-      .from("system_error_logs")
-      .select("id", { count: "exact", head: true })
-      .eq("resolved", false),
-    admin
-      .from("system_error_logs")
-      .select("id", { count: "exact", head: true })
-      .gte("created_at", since24h),
-    admin
-      .from("system_error_logs")
-      .select("id", { count: "exact", head: true })
-      .eq("level", "critical")
-      .eq("resolved", false),
-    admin
-      .from("system_error_logs")
-      .select("id", { count: "exact", head: true })
-      .eq("level", "error")
-      .eq("resolved", false),
-    admin
-      .from("system_error_logs")
-      .select("id", { count: "exact", head: true })
-      .eq("level", "warning")
-      .eq("resolved", false),
-    admin
-      .from("system_error_logs")
-      .select("id", { count: "exact", head: true })
-      .eq("layer", "backend")
-      .eq("resolved", false),
-    admin
-      .from("system_error_logs")
-      .select("id", { count: "exact", head: true })
-      .eq("layer", "database_auth")
-      .eq("resolved", false),
-    admin
-      .from("system_error_logs")
-      .select("id", { count: "exact", head: true })
-      .eq("layer", "frontend")
-      .eq("resolved", false),
-  ]);
+  // Single lightweight projection replaces 9 separate COUNT(*) round-trips
+  const { data, error } = await admin
+    .from("system_error_logs")
+    .select("level, layer, resolved, created_at");
 
-  if (isMissingLogsTableError(totalRes.error)) {
+  if (isMissingLogsTableError(error)) {
     return {
       schemaMissing: true,
       total: 0,
@@ -271,21 +224,32 @@ async function getErrorLogSummary(): Promise<ErrorLogSummary> {
     };
   }
 
+  const rows = data ?? [];
+  let unresolved = 0;
+  let last24h = 0;
+  const bySeverity = { critical: 0, error: 0, warning: 0 };
+  const byLayer = { backend: 0, database_auth: 0, frontend: 0 };
+
+  for (const row of rows) {
+    if (row.created_at >= since24h) last24h += 1;
+    if (!row.resolved) {
+      unresolved += 1;
+      if (row.level in bySeverity) {
+        bySeverity[row.level as keyof typeof bySeverity] += 1;
+      }
+      if (row.layer in byLayer) {
+        byLayer[row.layer as keyof typeof byLayer] += 1;
+      }
+    }
+  }
+
   return {
     schemaMissing: false,
-    total: totalRes.count ?? 0,
-    unresolved: unresolvedRes.count ?? 0,
-    last24h: last24hRes.count ?? 0,
-    bySeverity: {
-      critical: criticalRes.count ?? 0,
-      error: errorRes.count ?? 0,
-      warning: warningRes.count ?? 0,
-    },
-    byLayer: {
-      backend: backendRes.count ?? 0,
-      database_auth: dbAuthRes.count ?? 0,
-      frontend: frontendRes.count ?? 0,
-    },
+    total: rows.length,
+    unresolved,
+    last24h,
+    bySeverity,
+    byLayer,
   };
 }
 
@@ -337,22 +301,22 @@ export async function getSystemHealthSnapshot(): Promise<SystemHealthSnapshot> {
     await Promise.all([
       runHttpProbe({
         id: "supabase-rest",
-        name: "Supabase REST API",
-        description: "PostgREST gateway & schema availability",
+        name: "Data Service",
+        description: "Records gateway & availability",
         url: `${url}/rest/v1/`,
         headers: { apikey: secretKey },
       }),
       runHttpProbe({
         id: "supabase-auth",
-        name: "Supabase Auth Service",
-        description: "GoTrue authentication & session engine",
+        name: "Sign-In Service",
+        description: "Account login & session verification",
         url: `${url}/auth/v1/health`,
         headers: { apikey: publishableKey },
       }),
       runHttpProbe({
         id: "supabase-jwks",
-        name: "JWKS Token Keys",
-        description: "Asymmetric JWT verification keyset",
+        name: "Security Keys",
+        description: "Active session verification keys",
         url: jwksUrl,
       }),
       runPostgresQueryProbe(),

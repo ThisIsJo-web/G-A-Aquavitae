@@ -60,6 +60,24 @@ export function formatPHP(value: number): string {
   })}`;
 }
 
+export function formatRangeLabel(rangeDays: OwnerRangeDays): string {
+  if (rangeDays === 365) return "Annually";
+  if (rangeDays === 30) return "Monthly";
+  return "Weekly";
+}
+
+export function formatRangeShortLabel(rangeDays: OwnerRangeDays): string {
+  if (rangeDays === 365) return "12M";
+  if (rangeDays === 30) return "30D";
+  return "7D";
+}
+
+export function formatRangeDescription(rangeDays: OwnerRangeDays): string {
+  if (rangeDays === 365) return "the last 12 months";
+  if (rangeDays === 30) return "the last 30 days";
+  return "the last 7 days";
+}
+
 export function formatCategoryLabel(category: ExpenseCategory): string {
   return (
     EXPENSE_CATEGORY_OPTIONS.find((opt) => opt.value === category)?.label ??

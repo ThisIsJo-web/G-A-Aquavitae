@@ -12,7 +12,8 @@ import { HealthSkeleton } from "./_components/health-skeleton";
 
 export const metadata: Metadata = {
   title: "System Health | G & A Aqua Vitae",
-  description: "Superadmin-exclusive system health and error logs dashboard",
+  description:
+    "Superadmin system health, color-coded error logs, activity audit logs, and account management",
 };
 
 async function SuperadminHealthContent() {
@@ -25,26 +26,26 @@ async function SuperadminHealthContent() {
 
   if (ctx.status === "forbidden") {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#EFEFF2] px-4">
-        <div className="w-full max-w-md rounded-[28px] border border-[#E5E5EA] bg-white p-8 text-center shadow-[0_12px_40px_rgba(0,0,0,0.05)]">
-          <span className="inline-block rounded-full bg-[#111111] px-3 py-1 text-xs font-semibold text-white">
-            403 · FORBIDDEN
+      <main className="flex min-h-screen items-center justify-center bg-[var(--av-backdrop)] px-4">
+        <div className="av-card w-full max-w-md p-8 text-center">
+          <span className="inline-block rounded-full bg-[var(--av-accent)] px-3 py-1 text-xs font-semibold text-[var(--av-accent-ink)]">
+            Access Restricted
           </span>
-          <h1 className="mt-4 text-xl font-bold text-[#111111]">
+          <h1 className="mt-4 text-xl font-bold text-[var(--av-ink)]">
             Superadmin Access Only
           </h1>
-          <p className="mt-2 text-sm text-[#71717A]">
-            Your account{ctx.email ? ` (${ctx.email})` : ""} has role{" "}
-            <span className="font-semibold text-[#111111]">
-              {ctx.role ?? "unknown"}
+          <p className="mt-2 text-sm text-[var(--av-muted)]">
+            Your account{ctx.email ? ` (${ctx.email})` : ""} is signed in as{" "}
+            <span className="font-semibold capitalize text-[var(--av-ink)]">
+              {ctx.role ?? "guest"}
             </span>
-            . This page is strictly restricted to Superadmin accounts.
+            . Only Superadmin accounts can open this control panel.
           </p>
           <Link
             href="/login"
-            className="mt-6 inline-block rounded-full bg-[#111111] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-black/85"
+            className="av-btn-primary mt-6 inline-block px-5 py-2.5 text-sm"
           >
-            Back to Login
+            Back to Sign In
           </Link>
         </div>
       </main>
@@ -54,7 +55,7 @@ async function SuperadminHealthContent() {
   const [initialHealth, initialLogs, initialUsers] = await Promise.all([
     getSystemHealthSnapshot(),
     getGroupedErrorLogs({ groupBy: "severity" }),
-    listManagedUsers(),
+    listManagedUsers(ctx.profile),
   ]);
 
   return (

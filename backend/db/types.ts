@@ -18,7 +18,6 @@ export type ErrorLogLevel = "critical" | "error" | "warning";
 export type ErrorLogLayer = "backend" | "database_auth" | "frontend";
 export type ErrorLogSource = "api" | "database" | "auth" | "client" | "system";
 
-export type GallonType = "slim" | "round";
 export type PosProductCategory = "refill" | "container" | "accessory";
 export type PosPaymentMethod = "cash" | "gcash" | "bank" | "utang";
 export type PosSaleStatus = "completed" | "voided";
@@ -70,6 +69,13 @@ export type AuditModule =
   | "supervision"
   | "inventory"
   | "security";
+export type ActivityActorRole =
+  | "superadmin"
+  | "owner"
+  | "cashier"
+  | "staff"
+  | "anonymous";
+export type ActivityStatus = "success" | "failed" | "denied";
 
 export type Database = {
   public: {
@@ -274,7 +280,6 @@ export type Database = {
           product_id: string | null;
           product_name: string;
           category: PosProductCategory;
-          gallon_type: GallonType | null;
           quantity: number;
           unit_price: number;
           line_total: number;
@@ -285,7 +290,6 @@ export type Database = {
           product_id?: string | null;
           product_name: string;
           category?: PosProductCategory;
-          gallon_type?: GallonType | null;
           quantity: number;
           unit_price: number;
           line_total: number;
@@ -295,7 +299,15 @@ export type Database = {
           unit_price?: number;
           line_total?: number;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "pos_sale_items_sale_id_fkey";
+            columns: ["sale_id"];
+            isOneToOne: false;
+            referencedRelation: "pos_sales";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       riders: {
         Row: {
@@ -370,7 +382,6 @@ export type Database = {
           customer_name: string;
           customer_phone: string | null;
           destination: string;
-          gallon_type: GallonType;
           order_type: DeliveryOrderType;
           quantity: number;
           empty_gallons_returned: number;
@@ -397,7 +408,6 @@ export type Database = {
           customer_name: string;
           customer_phone?: string | null;
           destination: string;
-          gallon_type?: GallonType;
           order_type?: DeliveryOrderType;
           quantity: number;
           empty_gallons_returned?: number;
@@ -466,7 +476,6 @@ export type Database = {
         Row: {
           id: string;
           owner_id: string;
-          gallon_type: GallonType;
           on_hand_qty: number;
           damaged_qty: number;
           updated_at: string;
@@ -474,7 +483,6 @@ export type Database = {
         Insert: {
           id?: string;
           owner_id: string;
-          gallon_type: GallonType;
           on_hand_qty?: number;
           damaged_qty?: number;
         };
@@ -489,7 +497,6 @@ export type Database = {
           id: string;
           owner_id: string;
           cashier_id: string | null;
-          gallon_type: GallonType;
           movement_type: GallonMovementType;
           quantity_delta: number;
           balance_after: number;
@@ -502,7 +509,6 @@ export type Database = {
           id?: string;
           owner_id: string;
           cashier_id?: string | null;
-          gallon_type: GallonType;
           movement_type: GallonMovementType;
           quantity_delta: number;
           balance_after: number;
@@ -524,7 +530,6 @@ export type Database = {
           customer_name: string;
           customer_phone: string | null;
           customer_address: string | null;
-          gallon_type: GallonType;
           qty_borrowed: number;
           qty_returned: number;
           deposit_amount: number;
@@ -543,7 +548,6 @@ export type Database = {
           customer_name: string;
           customer_phone?: string | null;
           customer_address?: string | null;
-          gallon_type?: GallonType;
           qty_borrowed: number;
           qty_returned?: number;
           deposit_amount?: number;
@@ -744,6 +748,50 @@ export type Database = {
           prev_hash: string;
           entry_hash: string;
           created_at?: string;
+        };
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      system_activity_logs: {
+        Row: {
+          id: string;
+          created_at: string;
+          actor_id: string | null;
+          actor_name: string;
+          actor_email: string;
+          actor_role: ActivityActorRole;
+          station_owner_id: string | null;
+          module: string;
+          action: string;
+          control_label: string | null;
+          target_type: string | null;
+          target_id: string | null;
+          target_label: string | null;
+          route: string | null;
+          status: ActivityStatus;
+          details: Json;
+          ip_address: string | null;
+          user_agent: string | null;
+        };
+        Insert: {
+          id?: string;
+          created_at?: string;
+          actor_id?: string | null;
+          actor_name: string;
+          actor_email: string;
+          actor_role: ActivityActorRole;
+          station_owner_id?: string | null;
+          module: string;
+          action: string;
+          control_label?: string | null;
+          target_type?: string | null;
+          target_id?: string | null;
+          target_label?: string | null;
+          route?: string | null;
+          status?: ActivityStatus;
+          details?: Json;
+          ip_address?: string | null;
+          user_agent?: string | null;
         };
         Update: Record<string, never>;
         Relationships: [];

@@ -1,11 +1,12 @@
 import "server-only";
 
+import { cache } from "react";
 import {
   createSupabaseAdminClient,
   createSupabaseServerClient,
 } from "@/backend/db/supabase";
 import type { Database, StaffRole, UserRole } from "@/backend/db/types";
-import { AuthServiceError, requireAuth } from "@/backend/services/auth";
+import { AuthServiceError } from "@/backend/services/auth";
 
 export type UserProfile = Database["public"]["Tables"]["profiles"]["Row"];
 
@@ -17,49 +18,95 @@ export function isValidRole(value: unknown): value is UserRole {
 }
 
 /**
+ * Fast, per-request cached profile resolver:
+ * 1) Verifies JWT claims locally via Supabase JWKS (~1-2ms vs ~400ms GoTrue HTTP round-trip).
+ * 2) Runs ONE indexed lookup on public.profiles via the singleton admin client.
+ * 3) Memoized with React cache() so repeated calls in the same request cost 0ms.
+ */
+export const getRequestProfile = cache(async (): Promise<{
+  userId: string;
+  email: string | null;
+  profile: UserProfile | null;
+} | null> => {
+  const supabase = await createSupabaseServerClient();
+  const { data: claimsData, error: claimsError } =
+    await supabase.auth.getClaims();
+
+  let userId =
+    !claimsError && typeof claimsData?.claims?.sub === "string"
+      ? claimsData.claims.sub
+      : null;
+  let email =
+    !claimsError && typeof claimsData?.claims?.email === "string"
+      ? claimsData.claims.email
+      : null;
+
+  // Fallback to getUser() only when claims need server refresh
+  if (!userId) {
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    if (userError || !userData.user) {
+      return null;
+    }
+    userId = userData.user.id;
+    email = userData.user.email ?? null;
+  }
+
+  const admin = createSupabaseAdminClient();
+  const { data: profile, error: profileError } = await admin
+    .from("profiles")
+    .select("*")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (profileError) {
+    return { userId, email, profile: null };
+  }
+
+  return { userId, email, profile };
+});
+
+/**
  * Fetches the currently authenticated user's profile and verifies the account is active.
  */
 export async function requireActiveProfile(): Promise<UserProfile> {
-  const user = await requireAuth();
-  const supabase = await createSupabaseServerClient();
-
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", user.id)
-    .single();
-
-  if (error || !data) {
+  const session = await getRequestProfile();
+  if (!session) {
+    throw new AuthServiceError("Authentication required", 401);
+  }
+  if (!session.profile) {
     throw new AuthServiceError("User profile not found", 403);
   }
-
-  if (!data.is_active) {
+  if (!session.profile.is_active) {
     throw new AuthServiceError("Account is deactivated", 403);
   }
-
-  return data;
+  return session.profile;
 }
 
 /**
  * Lists managed users based on caller role:
- * - superadmin: all profiles
+ * - superadmin: all profiles (or staff of a specific owner when targetOwnerId is supplied)
  * - owner: only staff belonging to this owner
  */
-export async function listManagedUsers(): Promise<UserProfile[]> {
-  const actor = await requireActiveProfile();
+export async function listManagedUsers(
+  actorOverride?: UserProfile,
+  targetOwnerId?: string
+): Promise<UserProfile[]> {
+  const actor = actorOverride ?? (await requireActiveProfile());
 
   if (actor.role !== "superadmin" && actor.role !== "owner") {
     throw new AuthServiceError("Forbidden", 403);
   }
 
-  const supabase = await createSupabaseServerClient();
-  let query = supabase
+  const admin = createSupabaseAdminClient();
+  let query = admin
     .from("profiles")
     .select("*")
     .order("created_at", { ascending: false });
 
   if (actor.role === "owner") {
     query = query.eq("owner_id", actor.id).in("role", ["cashier", "staff"]);
+  } else if (targetOwnerId) {
+    query = query.eq("owner_id", targetOwnerId).in("role", ["cashier", "staff"]);
   }
 
   const { data, error } = await query;

@@ -384,10 +384,10 @@ create table if not exists public.pos_products (
   owner_id uuid not null references auth.users (id) on delete cascade,
   name text not null,
   category text not null check (category in ('refill', 'container', 'accessory')),
-  gallon_type text check (gallon_type in ('slim', 'round')),
   unit_price numeric(10, 2) not null check (unit_price >= 0),
   is_active boolean not null default true,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  unique (owner_id, name)
 );
 
 create index if not exists idx_pos_products_owner
@@ -441,7 +441,6 @@ create table if not exists public.pos_sale_items (
   product_id uuid references public.pos_products (id) on delete set null,
   product_name text not null,
   category text not null default 'refill' check (category in ('refill', 'container', 'accessory')),
-  gallon_type text check (gallon_type in ('slim', 'round')),
   quantity integer not null check (quantity > 0),
   unit_price numeric(10, 2) not null check (unit_price >= 0),
   line_total numeric(10, 2) not null check (line_total >= 0)
@@ -505,7 +504,6 @@ create table if not exists public.deliveries (
   customer_name text not null,
   customer_phone text,
   destination text not null,
-  gallon_type text not null default 'slim' check (gallon_type in ('slim', 'round')),
   order_type text not null default 'refill' check (order_type in ('refill', 'gallon_with_water')),
   quantity integer not null check (quantity > 0),
   unit_price numeric(10, 2) not null check (unit_price >= 0),
@@ -578,11 +576,10 @@ create policy "Tenant cashier/owner manages vendo_collections"
 create table if not exists public.gallon_stock (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users (id) on delete cascade,
-  gallon_type text not null check (gallon_type in ('slim', 'round')),
   on_hand_qty integer not null default 0 check (on_hand_qty >= 0),
   damaged_qty integer not null default 0 check (damaged_qty >= 0),
   updated_at timestamptz not null default now(),
-  unique (owner_id, gallon_type)
+  unique (owner_id)
 );
 
 alter table public.gallon_stock enable row level security;
@@ -605,7 +602,6 @@ create table if not exists public.gallon_inventory_logs (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users (id) on delete cascade,
   cashier_id uuid references auth.users (id) on delete set null,
-  gallon_type text not null check (gallon_type in ('slim', 'round')),
   movement_type text not null check (
     movement_type in (
       'restock',
@@ -647,7 +643,6 @@ create table if not exists public.borrowed_gallons (
   customer_name text not null,
   customer_phone text,
   customer_address text,
-  gallon_type text not null default 'slim' check (gallon_type in ('slim', 'round')),
   qty_borrowed integer not null check (qty_borrowed > 0),
   qty_returned integer not null default 0 check (qty_returned >= 0 and qty_returned <= qty_borrowed),
   deposit_amount numeric(10, 2) not null default 0 check (deposit_amount >= 0),
@@ -968,3 +963,121 @@ end $$;
 -- 3. Remove unused gallon_type column from pos_products
 alter table public.pos_products
   drop column if exists gallon_type;
+
+
+-- ============================================================
+-- 12g. Superadmin System-Wide Activity Audit Logs ("Who Did What")
+-- ============================================================
+create table if not exists public.system_activity_logs (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  actor_id uuid references auth.users (id) on delete set null,
+  actor_name text not null,
+  actor_email text not null,
+  actor_role text not null check (actor_role in ('superadmin', 'owner', 'cashier', 'staff', 'anonymous')),
+  station_owner_id uuid references auth.users (id) on delete set null,
+  module text not null,
+  action text not null,
+  control_label text,
+  target_type text,
+  target_id text,
+  target_label text,
+  route text,
+  status text not null default 'success' check (status in ('success', 'failed', 'denied')),
+  details jsonb not null default '{}'::jsonb,
+  ip_address text,
+  user_agent text
+);
+
+create index if not exists idx_system_activity_created
+  on public.system_activity_logs (created_at desc);
+
+create index if not exists idx_system_activity_actor
+  on public.system_activity_logs (actor_id, created_at desc);
+
+create index if not exists idx_system_activity_role_module
+  on public.system_activity_logs (actor_role, module, created_at desc);
+
+alter table public.system_activity_logs enable row level security;
+
+drop policy if exists "Superadmin reads system_activity_logs" on public.system_activity_logs;
+create policy "Superadmin reads system_activity_logs"
+  on public.system_activity_logs
+  for select
+  to authenticated
+  using (public.is_superadmin());
+
+create or replace function public.prevent_system_activity_mutation()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'system_activity_logs cannot be modified or deleted';
+end;
+$$;
+
+drop trigger if exists trg_prevent_system_activity_mutation on public.system_activity_logs;
+create trigger trg_prevent_system_activity_mutation
+  before update or delete on public.system_activity_logs
+  for each row
+  execute function public.prevent_system_activity_mutation();
+
+-- ============================================================
+-- 12h. Remove gallon_type Across All Tables & Consolidate gallon_stock
+-- ============================================================
+do $$
+begin
+  -- 1. Consolidate multi-row (slim/round) gallon_stock per owner into 1 row
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'gallon_stock'
+      and column_name = 'gallon_type'
+  ) then
+    with totals as (
+      select
+        owner_id,
+        (array_agg(id order by updated_at desc, id asc))[1] as keep_id,
+        coalesce(sum(on_hand_qty), 0)::integer as total_on_hand,
+        coalesce(sum(damaged_qty), 0)::integer as total_damaged
+      from public.gallon_stock
+      group by owner_id
+    )
+    update public.gallon_stock gs
+    set on_hand_qty = t.total_on_hand,
+        damaged_qty = t.total_damaged
+    from totals t
+    where gs.id = t.keep_id;
+
+    delete from public.gallon_stock gs
+    using (
+      select id,
+             row_number() over (partition by owner_id order by updated_at desc, id asc) as rn
+      from public.gallon_stock
+    ) dup
+    where gs.id = dup.id
+      and dup.rn > 1;
+
+    alter table public.gallon_stock
+      drop constraint if exists gallon_stock_owner_id_gallon_type_key;
+
+    alter table public.gallon_stock
+      drop column if exists gallon_type;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'uq_gallon_stock_owner'
+  ) then
+    alter table public.gallon_stock
+      add constraint uq_gallon_stock_owner unique (owner_id);
+  end if;
+end $$;
+
+alter table public.pos_products drop column if exists gallon_type;
+alter table public.pos_sale_items drop column if exists gallon_type;
+alter table public.deliveries drop column if exists gallon_type;
+alter table public.gallon_inventory_logs drop column if exists gallon_type;
+alter table public.borrowed_gallons drop column if exists gallon_type;

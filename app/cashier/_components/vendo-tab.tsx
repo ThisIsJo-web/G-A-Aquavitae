@@ -3,6 +3,12 @@
 import { Calendar, CalendarDays, CalendarRange, Coins } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import {
+  addIsoDaysClient,
+  clampIsoDate,
+  handleDecimalKeyDown,
+  sanitizeDecimalInput,
+} from "@/app/_components/ui/input-validation";
+import {
   EmptyState,
   NoticeBanner,
   RowActionMenu,
@@ -19,6 +25,9 @@ import {
 interface VendoTabProps {
   data: VendoOverviewDTO;
   businessDate: string;
+  todayDate: string;
+  stationQuery: string;
+  isElevatedActor: boolean;
   onDataChanged: () => Promise<void> | void;
   onRequestCorrection: (target: CorrectionModalTarget) => void;
 }
@@ -26,10 +35,13 @@ interface VendoTabProps {
 export function VendoTab({
   data,
   businessDate,
+  todayDate,
+  stationQuery,
+  isElevatedActor,
   onDataChanged,
   onRequestCorrection,
 }: VendoTabProps) {
-  const [machineName, setMachineName] = useState("Main Vendo #1");
+  const [machineName, setMachineName] = useState("");
   const [periodType, setPeriodType] = useState<VendoPeriodType>("daily");
   const [periodStart, setPeriodStart] = useState(businessDate);
   const [periodEnd, setPeriodEnd] = useState(businessDate);
@@ -41,18 +53,30 @@ export function VendoTab({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  const minPeriodStart = addIsoDaysClient(todayDate, -14);
+  const minPeriodEnd = addIsoDaysClient(todayDate, -7);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!machineName.trim()) {
+      setError("Enter the vendo machine name.");
+      return;
+    }
+    if (!amount.trim() || !Number.isFinite(Number(amount))) {
+      setError("Enter a valid peso amount collected.");
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     setSuccess(null);
 
     try {
-      const res = await fetch("/api/cashier/vendo", {
+      const res = await fetch(`/api/cashier/vendo${stationQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          machineName,
+          machineName: machineName.trim(),
           periodType,
           periodStart: periodType === "weekly" ? periodStart : businessDate,
           periodEnd: periodType === "weekly" ? periodEnd : businessDate,
@@ -72,6 +96,7 @@ export function VendoTab({
       setSuccess(
         `Saved ${periodType} vendo income of ${formatPHP(Number(amount))}.`
       );
+      setMachineName("");
       setAmount("");
       setMeterStart("");
       setMeterEnd("");
@@ -122,16 +147,16 @@ export function VendoTab({
           className="av-card space-y-4 p-6 lg:col-span-5"
         >
           <div>
-            <h2 className="text-base font-bold text-[#111111]">
+            <h2 className="text-base font-bold text-[var(--av-ink)]">
               Record Vendo Income
             </h2>
-            <p className="text-xs font-normal text-[#71717A]">
+            <p className="text-xs font-normal text-[var(--av-muted)]">
               Enter coins collected daily or weekly from your water vendo.
             </p>
           </div>
 
           <div>
-            <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+            <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
               Daily or Weekly
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -142,8 +167,8 @@ export function VendoTab({
                   onClick={() => setPeriodType(type)}
                   className={`rounded-full border px-4 py-2 text-xs font-semibold capitalize transition ${
                     periodType === type
-                      ? "border-[#111111] bg-[#111111] text-white"
-                      : "border-[#D4D4D8] bg-white text-[#111111] hover:bg-[#F4F4F6]"
+                      ? "border-[var(--av-accent)] bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                      : "border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink)] hover:bg-[var(--av-surface-subtle)]"
                   }`}
                 >
                   {type}
@@ -153,7 +178,7 @@ export function VendoTab({
           </div>
 
           <div>
-            <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+            <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
               Machine Name
             </label>
             <input
@@ -161,80 +186,103 @@ export function VendoTab({
               required
               value={machineName}
               onChange={(e) => setMachineName(e.target.value)}
-              className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-sm text-[#111111] focus:border-[#111111] focus:bg-white focus:outline-none"
+              placeholder="e.g. Main Vendo #1"
+              className="av-input w-full rounded-2xl px-4 py-2.5 text-sm"
             />
           </div>
 
           {periodType === "weekly" && (
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="mb-1 block text-xs font-semibold text-[#111111]">
+                <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                   Start Date
                 </label>
                 <input
                   type="date"
                   required
+                  min={minPeriodStart}
+                  max={periodEnd <= todayDate ? periodEnd : todayDate}
                   value={periodStart}
-                  onChange={(e) => setPeriodStart(e.target.value)}
-                  className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3 py-2 text-xs text-[#111111]"
+                  onChange={(e) =>
+                    setPeriodStart(
+                      clampIsoDate(e.target.value, minPeriodStart, periodEnd)
+                    )
+                  }
+                  className="av-input w-full rounded-2xl px-3 py-2 text-xs tabular-nums"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-semibold text-[#111111]">
+                <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                   End Date
                 </label>
                 <input
                   type="date"
                   required
+                  min={periodStart >= minPeriodEnd ? periodStart : minPeriodEnd}
+                  max={todayDate}
                   value={periodEnd}
-                  onChange={(e) => setPeriodEnd(e.target.value)}
-                  className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3 py-2 text-xs text-[#111111]"
+                  onChange={(e) => {
+                    const nextEnd = clampIsoDate(
+                      e.target.value,
+                      minPeriodEnd,
+                      todayDate
+                    );
+                    setPeriodEnd(nextEnd);
+                    if (periodStart > nextEnd) setPeriodStart(nextEnd);
+                  }}
+                  className="av-input w-full rounded-2xl px-3 py-2 text-xs tabular-nums"
                 />
               </div>
             </div>
           )}
 
           <div>
-            <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+            <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
               Coins / Cash Collected (₱)
             </label>
             <input
-              type="number"
-              min={0}
-              step="0.01"
+              type="text"
+              inputMode="decimal"
               required
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.00"
-              className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-base font-bold text-[#111111] tabular-nums focus:border-[#111111] focus:bg-white focus:outline-none"
+              onKeyDown={handleDecimalKeyDown}
+              onChange={(e) => setAmount(sanitizeDecimalInput(e.target.value))}
+              placeholder="e.g. 450.00"
+              className="av-input w-full rounded-2xl px-4 py-2.5 text-base font-bold tabular-nums"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="mb-1 block text-xs font-semibold text-[#71717A]">
+              <label className="mb-1 block text-xs font-semibold text-[var(--av-muted)]">
                 Meter Start (Optional)
               </label>
               <input
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={meterStart}
-                onChange={(e) => setMeterStart(e.target.value)}
-                placeholder="Liters"
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3 py-2 text-xs text-[#111111] tabular-nums"
+                onKeyDown={handleDecimalKeyDown}
+                onChange={(e) =>
+                  setMeterStart(sanitizeDecimalInput(e.target.value))
+                }
+                placeholder="e.g. 1250"
+                className="av-input w-full rounded-2xl px-3 py-2 text-xs tabular-nums"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-semibold text-[#71717A]">
+              <label className="mb-1 block text-xs font-semibold text-[var(--av-muted)]">
                 Meter End (Optional)
               </label>
               <input
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={meterEnd}
-                onChange={(e) => setMeterEnd(e.target.value)}
-                placeholder="Liters"
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3 py-2 text-xs text-[#111111] tabular-nums"
+                onKeyDown={handleDecimalKeyDown}
+                onChange={(e) =>
+                  setMeterEnd(sanitizeDecimalInput(e.target.value))
+                }
+                placeholder="e.g. 1410"
+                className="av-input w-full rounded-2xl px-3 py-2 text-xs tabular-nums"
               />
             </div>
           </div>
@@ -244,7 +292,7 @@ export function VendoTab({
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Notes (optional)"
-            className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-xs text-[#111111]"
+            className="av-input w-full rounded-2xl px-4 py-2.5 text-xs"
           />
 
           {error && (
@@ -265,15 +313,15 @@ export function VendoTab({
           <button
             type="submit"
             disabled={submitting || data.schemaMissing}
-            className="w-full rounded-full bg-[#111111] px-5 py-3 text-sm font-semibold text-white transition hover:bg-black/85 disabled:opacity-40"
+            className="av-btn-primary w-full rounded-full px-5 py-3 text-sm font-semibold transition disabled:opacity-40"
           >
             {submitting ? "Saving..." : "Save Vendo Income"}
           </button>
         </form>
 
-        {/* Rounded-Row Vendo History */}
+        {/* Vendo History */}
         <div className="av-card p-6 lg:col-span-7">
-          <h3 className="text-base font-bold text-[#111111]">
+          <h3 className="text-base font-bold text-[var(--av-ink)]">
             Vendo History ({data.collections.length})
           </h3>
           <div className="mt-4 overflow-x-auto">
@@ -286,7 +334,7 @@ export function VendoTab({
             ) : (
               <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
                 <thead>
-                  <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
+                  <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                     <th className="px-3 pb-1">Machine</th>
                     <th className="px-3 pb-1">Period</th>
                     <th className="px-3 pb-1">Meter</th>
@@ -299,13 +347,13 @@ export function VendoTab({
                   {data.collections.map((c) => (
                     <tr
                       key={c.id}
-                      className="rounded-2xl bg-[#F7F7F9] font-medium transition hover:bg-[#F0F0F3]"
+                      className="rounded-2xl bg-[var(--av-surface-subtle)] font-medium transition hover:bg-[var(--av-surface-hover)]"
                     >
                       <td className="rounded-l-2xl px-3 py-3">
-                        <div className="font-bold text-[#111111]">
+                        <div className="font-bold text-[var(--av-ink)]">
                           {c.machine_name}
                         </div>
-                        <div className="text-[11px] font-normal text-[#71717A]">
+                        <div className="text-[11px] font-normal text-[var(--av-muted)]">
                           {c.business_date}
                         </div>
                       </td>
@@ -314,21 +362,21 @@ export function VendoTab({
                           label={c.period_type === "daily" ? "Daily" : "Weekly"}
                           tone={c.period_type === "daily" ? "solid" : "soft"}
                         />
-                        <div className="mt-1 text-[11px] text-[#71717A] tabular-nums">
+                        <div className="mt-1 text-[11px] text-[var(--av-muted)] tabular-nums">
                           {c.period_start === c.period_end
                             ? c.period_start
                             : `${c.period_start} → ${c.period_end}`}
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-[11px] text-[#52525B] tabular-nums">
+                      <td className="px-3 py-3 text-[11px] text-[var(--av-ink-secondary)] tabular-nums">
                         {c.meter_start !== null && c.meter_end !== null
                           ? `${c.meter_start} → ${c.meter_end}`
                           : "—"}
                       </td>
-                      <td className="px-3 py-3 font-bold text-[#111111] tabular-nums">
+                      <td className="px-3 py-3 font-bold text-[var(--av-ink)] tabular-nums">
                         {formatPHP(c.amount)}
                       </td>
-                      <td className="px-3 py-3 text-[#71717A]">
+                      <td className="px-3 py-3 text-[var(--av-muted)]">
                         {c.notes || "—"}
                       </td>
                       <td className="rounded-r-2xl py-3 pr-3 text-right">
@@ -336,7 +384,9 @@ export function VendoTab({
                           ariaLabel={`Actions for ${c.machine_name}`}
                           actions={[
                             {
-                              label: "Request Amount Fix",
+                              label: isElevatedActor
+                                ? "Edit Amount"
+                                : "Request Amount Fix",
                               onClick: () =>
                                 onRequestCorrection({
                                   entityType: "vendo",

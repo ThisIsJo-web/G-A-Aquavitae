@@ -1,14 +1,17 @@
 import { NextResponse } from "next/server";
-import type { GallonType } from "@/backend/db/types";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
-import { requireCashierAccess } from "@/backend/services/auth-guards";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
+import { requireOwnerAccess } from "@/backend/services/auth-guards";
 import { createBorrowedGallonRecord } from "@/backend/services/cashier/inventory";
 
-interface CreateBorrowedBody {
+interface CreateBorrowBody {
   customerName?: unknown;
   customerPhone?: unknown;
   customerAddress?: unknown;
-  gallonType?: unknown;
   qtyBorrowed?: unknown;
   depositAmount?: unknown;
   notes?: unknown;
@@ -17,22 +20,23 @@ interface CreateBorrowedBody {
 
 export async function POST(request: Request) {
   try {
-    const { profile, tenantOwnerId } = await requireCashierAccess();
-    const body = await parseJsonBody<CreateBorrowedBody>(request);
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
+    const body = await parseJsonBody<CreateBorrowBody>(request);
 
     if (
       !body ||
       typeof body.customerName !== "string" ||
-      !body.customerName.trim()
+      !body.customerName.trim() ||
+      !Number.isFinite(Number(body.qtyBorrowed))
     ) {
       return NextResponse.json(
-        { error: "Customer name is required" },
+        { error: "Customer name and quantity borrowed are required" },
         { status: 400 }
       );
     }
-
-    const gallonType: GallonType =
-      body.gallonType === "round" ? "round" : "slim";
 
     const record = await createBorrowedGallonRecord(profile.id, tenantOwnerId, {
       customerName: body.customerName,
@@ -42,13 +46,33 @@ export async function POST(request: Request) {
         typeof body.customerAddress === "string"
           ? body.customerAddress
           : undefined,
-      gallonType,
-      qtyBorrowed: Number(body.qtyBorrowed ?? 1),
+      qtyBorrowed: Number(body.qtyBorrowed),
       depositAmount:
-        body.depositAmount !== undefined ? Number(body.depositAmount) : 0,
+        body.depositAmount !== undefined && body.depositAmount !== ""
+          ? Number(body.depositAmount)
+          : 0,
       notes: typeof body.notes === "string" ? body.notes : undefined,
       businessDate:
         typeof body.businessDate === "string" ? body.businessDate : undefined,
+    });
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "inventory",
+      action: `Recorded Borrowed Gallons (${record.qty_borrowed} gal)`,
+      controlLabel: "Save Borrowed Gallons",
+      targetType: "borrowed_gallon",
+      targetId: record.id,
+      targetLabel: record.customer_name,
+      route: "/api/cashier/borrowed-gallons",
+      ...meta,
     });
 
     return NextResponse.json(

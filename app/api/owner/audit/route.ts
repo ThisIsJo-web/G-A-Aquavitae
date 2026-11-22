@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { handleApiError } from "@/backend/lib/http";
+import { extractRequestMeta, handleApiError } from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import {
   backfillOwnerAuditLedger,
   queryOwnerAuditLedger,
@@ -18,8 +19,10 @@ const VALID_BUCKETS = new Set<AuditBucketFilter>([
 
 export async function GET(request: Request) {
   try {
-    const owner = await requireOwnerAccess();
     const { searchParams } = new URL(request.url);
+    const { tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
     const rawBucket = searchParams.get("bucket") ?? "all";
     const bucket: AuditBucketFilter = VALID_BUCKETS.has(
       rawBucket as AuditBucketFilter
@@ -27,7 +30,7 @@ export async function GET(request: Request) {
       ? (rawBucket as AuditBucketFilter)
       : "all";
 
-    const result = await queryOwnerAuditLedger(owner.id, {
+    const result = await queryOwnerAuditLedger(tenantOwnerId, {
       from: searchParams.get("from"),
       to: searchParams.get("to"),
       module: searchParams.get("module"),
@@ -47,11 +50,30 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
-    const owner = await requireOwnerAccess();
-    const { importedCount } = await backfillOwnerAuditLedger(owner.id);
-    const result = await queryOwnerAuditLedger(owner.id);
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
+    const { importedCount } = await backfillOwnerAuditLedger(tenantOwnerId);
+    const result = await queryOwnerAuditLedger(tenantOwnerId);
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "audit",
+      action: `Synced ${importedCount} past record(s) into Financial Audit Trail`,
+      controlLabel: "Sync Past Records",
+      route: "/api/owner/audit",
+      ...meta,
+    });
 
     return NextResponse.json(
       { importedCount, ledger: result },

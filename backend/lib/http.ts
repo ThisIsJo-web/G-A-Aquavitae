@@ -19,14 +19,38 @@ export interface ApiErrorContext {
   userId?: string | null;
 }
 
+export function normalizeHttpStatus(
+  status: number | undefined | null,
+  fallback = 500
+): number {
+  if (typeof status === "number" && Number.isInteger(status) && status >= 200 && status <= 599) {
+    return status;
+  }
+  return fallback;
+}
+
+export function extractRequestMeta(request?: Request): {
+  ipAddress: string | null;
+  userAgent: string | null;
+} {
+  if (!request) return { ipAddress: null, userAgent: null };
+  const forwarded = request.headers.get("x-forwarded-for");
+  const realIp = request.headers.get("x-real-ip");
+  const ipAddress =
+    forwarded?.split(",")[0]?.trim() || realIp?.trim() || null;
+  const userAgent = request.headers.get("user-agent")?.slice(0, 300) || null;
+  return { ipAddress, userAgent };
+}
+
 export function handleApiError(error: unknown, context?: ApiErrorContext) {
   if (error instanceof AuthServiceError) {
-    if (error.status >= 500) {
+    const safeStatus = normalizeHttpStatus(error.status, 500);
+    if (safeStatus >= 500) {
       void logSystemError({
         level: "error",
         source: context?.source ?? "api",
         message: error.message,
-        code: `HTTP_${error.status}`,
+        code: `HTTP_${safeStatus}`,
         route: context?.route ?? null,
         stack: error.stack ?? null,
         userId: context?.userId ?? null,
@@ -35,7 +59,7 @@ export function handleApiError(error: unknown, context?: ApiErrorContext) {
 
     return NextResponse.json(
       { error: error.message },
-      { status: error.status }
+      { status: safeStatus }
     );
   }
 

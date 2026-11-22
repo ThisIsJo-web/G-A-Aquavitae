@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import { requireSuperadmin } from "@/backend/services/auth-guards";
 import {
   getGroupedErrorLogs,
@@ -111,11 +116,28 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error:
-            "Unable to write error log. Ensure system_error_logs table is created from backend/db/schema.sql.",
+            "Unable to save error log right now. Please check that the error logs feature is set up.",
         },
         { status: 503 }
       );
     }
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: actor.id,
+        name: actor.full_name || actor.email,
+        email: actor.email,
+        role: actor.role,
+      },
+      module: "error_logs",
+      action: `Logged ${body.level} entry: ${created.message}`,
+      controlLabel: "Test Logs",
+      targetType: "error_log",
+      targetId: created.id,
+      route: "/api/superadmin/logs",
+      ...meta,
+    });
 
     return NextResponse.json(
       { log: created },

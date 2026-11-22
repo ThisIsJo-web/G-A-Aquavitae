@@ -1,7 +1,15 @@
 "use client";
 
-import { AlertCircle, ArrowLeftRight, Package } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { AlertCircle, ArrowLeftRight, Package, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import {
+  handleDecimalKeyDown,
+  handleIntegerKeyDown,
+  handlePhoneKeyDown,
+  sanitizeDecimalInput,
+  sanitizeIntegerInput,
+  sanitizePhoneInput,
+} from "@/app/_components/ui/input-validation";
 import {
   EmptyState,
   NoticeBanner,
@@ -13,12 +21,13 @@ import {
   formatPHP,
   type BorrowedGallonDTO,
   type InventoryOverviewDTO,
-} from "./types";
+} from "@/app/cashier/_components/types";
 
-interface InventoryTabProps {
-  data: InventoryOverviewDTO;
-  businessDate: string;
-  onDataChanged: () => Promise<void> | void;
+interface OwnerInventoryTabProps {
+  stationQuery: string;
+  todayDate: string;
+  refreshSignal: number;
+  onDataChanged: () => Promise<void>;
 }
 
 const MOVEMENT_LABELS: Record<string, string> = {
@@ -31,47 +40,89 @@ const MOVEMENT_LABELS: Record<string, string> = {
   adjustment: "Adjusted",
 };
 
-export function InventoryTab({
-  data,
-  businessDate,
+export function OwnerInventoryTab({
+  stationQuery,
+  todayDate,
+  refreshSignal,
   onDataChanged,
-}: InventoryTabProps) {
+}: OwnerInventoryTabProps) {
+  const [data, setData] = useState<InventoryOverviewDTO | null>(null);
+  const [loading, setLoading] = useState(true);
+
   const [movementType, setMovementType] = useState<
     "restock" | "damaged" | "adjustment"
   >("restock");
-  const [stockQty, setStockQty] = useState("10");
+  const [stockQty, setStockQty] = useState("");
   const [stockNotes, setStockNotes] = useState("");
   const [savingStock, setSavingStock] = useState(false);
 
   const [borrowCustomer, setBorrowCustomer] = useState("");
   const [borrowPhone, setBorrowPhone] = useState("");
   const [borrowAddress, setBorrowAddress] = useState("");
-  const [borrowQty, setBorrowQty] = useState("1");
-  const [borrowDeposit, setBorrowDeposit] = useState("0");
+  const [borrowQty, setBorrowQty] = useState("");
+  const [borrowDeposit, setBorrowDeposit] = useState("");
   const [borrowNotes, setBorrowNotes] = useState("");
   const [savingBorrow, setSavingBorrow] = useState(false);
 
   const [returnInputs, setReturnInputs] = useState<Record<string, string>>({});
   const [returningId, setReturningId] = useState<string | null>(null);
   const [borrowFilter, setBorrowFilter] = useState<"active" | "all">("active");
-  const [selectedBorrowed, setSelectedBorrowed] = useState<Set<string>>(
-    new Set()
-  );
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const loadInventory = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/owner/inventory${stationQuery}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const payload = (await res.json()) as InventoryOverviewDTO;
+      setData(payload);
+    } finally {
+      setLoading(false);
+    }
+  }, [stationQuery]);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/owner/inventory${stationQuery}`, { cache: "no-store" })
+      .then(async (res) => {
+        if (!active || !res.ok) return;
+        const payload = (await res.json()) as InventoryOverviewDTO;
+        if (active) setData(payload);
+      })
+      .catch(() => {
+        // Ignore transient background refresh errors
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [stationQuery, refreshSignal]);
 
   async function handleStockMovement(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const qty = Math.trunc(Number(stockQty));
+    if (!stockQty.trim() || !Number.isFinite(qty) || qty === 0) {
+      setError("Enter a valid whole number of gallons.");
+      return;
+    }
+
     setSavingStock(true);
     setError(null);
+    setSuccess(null);
     try {
-      const res = await fetch("/api/cashier/inventory", {
+      const res = await fetch(`/api/owner/inventory${stationQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           movementType,
-          quantity: Number(stockQty),
-          notes: stockNotes || undefined,
-          businessDate,
+          quantity: qty,
+          notes: stockNotes.trim() || undefined,
+          businessDate: todayDate,
         }),
       });
       const payload = (await res.json()) as { error?: string };
@@ -79,8 +130,10 @@ export function InventoryTab({
         setError(payload.error ?? "Could not update gallon stock.");
         return;
       }
+      setStockQty("");
       setStockNotes("");
-      await Promise.resolve(onDataChanged());
+      setSuccess("Station gallon stock updated.");
+      await Promise.all([loadInventory(), onDataChanged()]);
     } finally {
       setSavingStock(false);
     }
@@ -88,20 +141,27 @@ export function InventoryTab({
 
   async function handleAddBorrowed(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const qty = Math.floor(Number(borrowQty));
+    if (!borrowCustomer.trim() || !Number.isFinite(qty) || qty <= 0) {
+      setError("Enter customer name and gallons borrowed (at least 1).");
+      return;
+    }
+
     setSavingBorrow(true);
     setError(null);
+    setSuccess(null);
     try {
-      const res = await fetch("/api/cashier/borrowed-gallons", {
+      const res = await fetch(`/api/owner/borrowed-gallons${stationQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          customerName: borrowCustomer,
-          customerPhone: borrowPhone || undefined,
-          customerAddress: borrowAddress || undefined,
-          qtyBorrowed: Number(borrowQty),
-          depositAmount: Number(borrowDeposit) || 0,
-          notes: borrowNotes || undefined,
-          businessDate,
+          customerName: borrowCustomer.trim(),
+          customerPhone: borrowPhone.trim() || undefined,
+          customerAddress: borrowAddress.trim() || undefined,
+          qtyBorrowed: qty,
+          depositAmount: borrowDeposit ? Number(borrowDeposit) : 0,
+          notes: borrowNotes.trim() || undefined,
+          businessDate: todayDate,
         }),
       });
       const payload = (await res.json()) as { error?: string };
@@ -112,10 +172,11 @@ export function InventoryTab({
       setBorrowCustomer("");
       setBorrowPhone("");
       setBorrowAddress("");
-      setBorrowQty("1");
-      setBorrowDeposit("0");
+      setBorrowQty("");
+      setBorrowDeposit("");
       setBorrowNotes("");
-      await Promise.resolve(onDataChanged());
+      setSuccess("Borrowed gallon record saved.");
+      await Promise.all([loadInventory(), onDataChanged()]);
     } finally {
       setSavingBorrow(false);
     }
@@ -126,18 +187,24 @@ export function InventoryTab({
     customQty?: number
   ) {
     const remaining = record.qty_borrowed - record.qty_returned;
-    const qty = customQty ?? Number(returnInputs[record.id] ?? remaining);
-    if (!Number.isFinite(qty) || qty <= 0) return;
+    const rawVal = returnInputs[record.id];
+    const qty =
+      customQty ?? (rawVal && rawVal.trim() ? Number(rawVal) : remaining);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setError("Enter a valid number of returned gallons.");
+      return;
+    }
 
     setReturningId(record.id);
     setError(null);
+    setSuccess(null);
     try {
       const res = await fetch(
-        `/api/cashier/borrowed-gallons/${record.id}/return`,
+        `/api/owner/borrowed-gallons/${record.id}/return${stationQuery}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ qtyReturned: qty, businessDate }),
+          body: JSON.stringify({ qtyReturned: qty, businessDate: todayDate }),
         }
       );
       const payload = (await res.json()) as { error?: string };
@@ -145,25 +212,42 @@ export function InventoryTab({
         setError(payload.error ?? "Could not mark gallons returned.");
         return;
       }
-      await Promise.resolve(onDataChanged());
+      setReturnInputs((prev) => ({ ...prev, [record.id]: "" }));
+      setSuccess(`Marked ${qty} gallon(s) returned by ${record.customer_name}.`);
+      await Promise.all([loadInventory(), onDataChanged()]);
     } finally {
       setReturningId(null);
     }
   }
 
-  function toggleSelectBorrow(id: string) {
-    setSelectedBorrowed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  if (!data && loading) {
+    return (
+      <div className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-3">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="h-32 animate-pulse rounded-[24px] border border-[var(--av-border)] bg-[var(--av-surface)]"
+            />
+          ))}
+        </div>
+        <div className="h-64 animate-pulse rounded-[24px] border border-[var(--av-border)] bg-[var(--av-surface)]" />
+      </div>
+    );
   }
 
+  const summary = data?.summary ?? {
+    totalOnHand: 0,
+    totalDamaged: 0,
+    currentlyBorrowedOut: 0,
+    activeBorrowers: 0,
+  };
+  const borrowedGallons = data?.borrowedGallons ?? [];
+  const logs = data?.logs ?? [];
   const visibleBorrowed =
     borrowFilter === "active"
-      ? data.borrowedGallons.filter((b) => b.status !== "returned")
-      : data.borrowedGallons;
+      ? borrowedGallons.filter((b) => b.status !== "returned")
+      : borrowedGallons;
 
   return (
     <div className="space-y-6">
@@ -174,26 +258,33 @@ export function InventoryTab({
           onDismiss={() => setError(null)}
         />
       )}
+      {success && (
+        <NoticeBanner
+          tone="success"
+          message={success}
+          onDismiss={() => setSuccess(null)}
+        />
+      )}
 
-      {/* Quick Stats Row (1 Solid Black Card) */}
+      {/* Quick Stats */}
       <div className="grid gap-4 sm:grid-cols-3">
         <QuickStatCard
           highlighted
           label="Gallons On-Hand"
-          value={data.summary.totalOnHand}
-          sublabel="Available station gallons"
+          value={summary.totalOnHand}
+          sublabel="Available station containers"
           icon={<Package className="h-5 w-5" />}
         />
         <QuickStatCard
           label="Borrowed Gallons Out"
-          value={data.summary.currentlyBorrowedOut}
-          sublabel={`${data.summary.activeBorrowers} customer(s) holding gallons`}
+          value={summary.currentlyBorrowedOut}
+          sublabel={`${summary.activeBorrowers} customer(s) holding gallons`}
           icon={<ArrowLeftRight className="h-5 w-5" />}
         />
         <QuickStatCard
           label="Damaged Gallons"
-          value={data.summary.totalDamaged}
-          sublabel="Marked damaged / unusable"
+          value={summary.totalDamaged}
+          sublabel="Marked damaged / retired"
           icon={<AlertCircle className="h-5 w-5" />}
         />
       </div>
@@ -202,27 +293,29 @@ export function InventoryTab({
       <div className="grid gap-6 lg:grid-cols-2">
         <form onSubmit={handleStockMovement} className="av-card space-y-4 p-6">
           <div>
-            <h2 className="text-base font-bold text-[#111111]">
-              Update Daily Gallon Stock
+            <h2 className="text-base font-bold text-[var(--av-ink)]">
+              Update Station Gallon Stock
             </h2>
-            <p className="text-xs font-normal text-[#71717A]">
-              Add gallons to stock, mark damaged gallons, or adjust your count.
+            <p className="text-xs font-normal text-[var(--av-muted)]">
+              Add new gallons to stock, mark damaged gallons, or adjust your
+              count.
             </p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
                 Action
               </label>
               <select
                 value={movementType}
-                onChange={(e) =>
+                onChange={(e) => {
                   setMovementType(
                     e.target.value as "restock" | "damaged" | "adjustment"
-                  )
-                }
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs font-semibold text-[#111111]"
+                  );
+                  setStockQty("");
+                }}
+                className="av-input w-full rounded-2xl px-3.5 py-2.5 text-xs font-semibold"
               >
                 <option value="restock">Add Stock (+)</option>
                 <option value="damaged">Mark Damaged (-)</option>
@@ -231,15 +324,28 @@ export function InventoryTab({
             </div>
 
             <div>
-              <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
                 Gallons
               </label>
               <input
-                type="number"
+                type="text"
+                inputMode="numeric"
                 required
                 value={stockQty}
-                onChange={(e) => setStockQty(e.target.value)}
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-sm font-bold text-[#111111] tabular-nums"
+                onKeyDown={(e) =>
+                  handleIntegerKeyDown(e, movementType === "adjustment")
+                }
+                onChange={(e) =>
+                  setStockQty(
+                    sanitizeIntegerInput(e.target.value, {
+                      allowNegative: movementType === "adjustment",
+                    })
+                  )
+                }
+                placeholder={
+                  movementType === "adjustment" ? "e.g. 5 or -5" : "e.g. 10"
+                }
+                className="av-input w-full rounded-2xl px-3.5 py-2.5 text-sm font-bold tabular-nums"
               />
             </div>
           </div>
@@ -249,13 +355,13 @@ export function InventoryTab({
             value={stockNotes}
             onChange={(e) => setStockNotes(e.target.value)}
             placeholder="Note (e.g. Morning gallon count)"
-            className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-xs text-[#111111]"
+            className="av-input w-full rounded-2xl px-4 py-2.5 text-xs"
           />
 
           <button
             type="submit"
-            disabled={savingStock || data.schemaMissing}
-            className="w-full rounded-full bg-[#111111] px-5 py-3 text-xs font-semibold text-white transition hover:bg-black/85 disabled:opacity-40"
+            disabled={savingStock || Boolean(data?.schemaMissing)}
+            className="av-btn-primary w-full rounded-full px-5 py-3 text-xs font-semibold transition disabled:opacity-40"
           >
             {savingStock ? "Saving..." : "Update Stock"}
           </button>
@@ -263,12 +369,12 @@ export function InventoryTab({
 
         <form onSubmit={handleAddBorrowed} className="av-card space-y-4 p-6">
           <div>
-            <h2 className="text-base font-bold text-[#111111]">
+            <h2 className="text-base font-bold text-[var(--av-ink)]">
               Record Borrowed Gallons
             </h2>
-            <p className="text-xs font-normal text-[#71717A]">
-              Track customers borrowing station gallons. Stock replenishes on
-              return.
+            <p className="text-xs font-normal text-[var(--av-muted)]">
+              Track customers borrowing station containers. Stock replenishes
+              automatically when returned.
             </p>
           </div>
 
@@ -279,14 +385,18 @@ export function InventoryTab({
               value={borrowCustomer}
               onChange={(e) => setBorrowCustomer(e.target.value)}
               placeholder="Customer name"
-              className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs text-[#111111]"
+              className="av-input rounded-2xl px-3.5 py-2.5 text-xs"
             />
             <input
-              type="text"
+              type="tel"
+              inputMode="tel"
               value={borrowPhone}
-              onChange={(e) => setBorrowPhone(e.target.value)}
+              onKeyDown={handlePhoneKeyDown}
+              onChange={(e) =>
+                setBorrowPhone(sanitizePhoneInput(e.target.value))
+              }
               placeholder="Phone (optional)"
-              className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs text-[#111111]"
+              className="av-input rounded-2xl px-3.5 py-2.5 text-xs"
             />
           </div>
 
@@ -295,34 +405,41 @@ export function InventoryTab({
             value={borrowAddress}
             onChange={(e) => setBorrowAddress(e.target.value)}
             placeholder="Area / Address (e.g. Tagum)"
-            className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs text-[#111111]"
+            className="av-input w-full rounded-2xl px-3.5 py-2.5 text-xs"
           />
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="mb-1 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                 Gallons Borrowed
               </label>
               <input
-                type="number"
-                min={1}
+                type="text"
+                inputMode="numeric"
                 required
                 value={borrowQty}
-                onChange={(e) => setBorrowQty(e.target.value)}
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-sm font-bold text-[#111111] tabular-nums"
+                onKeyDown={(e) => handleIntegerKeyDown(e, false)}
+                onChange={(e) =>
+                  setBorrowQty(sanitizeIntegerInput(e.target.value))
+                }
+                placeholder="e.g. 2"
+                className="av-input w-full rounded-2xl px-3.5 py-2 text-sm font-bold tabular-nums"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                 Deposit (₱, Optional)
               </label>
               <input
-                type="number"
-                min={0}
-                step="1"
+                type="text"
+                inputMode="decimal"
                 value={borrowDeposit}
-                onChange={(e) => setBorrowDeposit(e.target.value)}
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-sm font-bold text-[#111111] tabular-nums"
+                onKeyDown={handleDecimalKeyDown}
+                onChange={(e) =>
+                  setBorrowDeposit(sanitizeDecimalInput(e.target.value))
+                }
+                placeholder="e.g. 150"
+                className="av-input w-full rounded-2xl px-3.5 py-2 text-sm font-bold tabular-nums"
               />
             </div>
           </div>
@@ -332,52 +449,64 @@ export function InventoryTab({
             value={borrowNotes}
             onChange={(e) => setBorrowNotes(e.target.value)}
             placeholder="Note (optional)"
-            className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs text-[#111111]"
+            className="av-input w-full rounded-2xl px-3.5 py-2.5 text-xs"
           />
 
           <button
             type="submit"
-            disabled={savingBorrow || data.schemaMissing}
-            className="w-full rounded-full border border-[#D4D4D8] bg-white px-5 py-3 text-xs font-semibold text-[#111111] transition hover:border-[#111111] hover:bg-[#111111] hover:text-white disabled:opacity-40"
+            disabled={savingBorrow || Boolean(data?.schemaMissing)}
+            className="av-btn-outline w-full rounded-full px-5 py-3 text-xs font-semibold transition disabled:opacity-40"
           >
             {savingBorrow ? "Saving..." : "Save Borrowed Gallons"}
           </button>
         </form>
       </div>
 
-      {/* Borrowed Gallons Rounded-Row Table */}
+      {/* Borrowed Gallons Table */}
       <div className="av-card p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="text-base font-bold text-[#111111]">
+            <h3 className="text-base font-bold text-[var(--av-ink)]">
               Borrowed Gallons ({visibleBorrowed.length})
             </h3>
-            <p className="text-xs font-normal text-[#71717A]">
-              Borrowed, returned, and remaining balance per customer.
+            <p className="text-xs font-normal text-[var(--av-muted)]">
+              Borrowed, returned, and remaining containers per customer.
             </p>
           </div>
-          <div className="inline-flex rounded-full bg-[#F2F2F4] p-1 text-xs">
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-full bg-[var(--av-surface-subtle)] p-1 text-xs">
+              <button
+                type="button"
+                onClick={() => setBorrowFilter("active")}
+                className={`rounded-full px-3.5 py-1.5 font-semibold transition ${
+                  borrowFilter === "active"
+                    ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                    : "text-[var(--av-muted)]"
+                }`}
+              >
+                Unreturned
+              </button>
+              <button
+                type="button"
+                onClick={() => setBorrowFilter("all")}
+                className={`rounded-full px-3.5 py-1.5 font-semibold transition ${
+                  borrowFilter === "all"
+                    ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                    : "text-[var(--av-muted)]"
+                }`}
+              >
+                All History
+              </button>
+            </div>
             <button
               type="button"
-              onClick={() => setBorrowFilter("active")}
-              className={`rounded-full px-3.5 py-1.5 font-semibold transition ${
-                borrowFilter === "active"
-                  ? "bg-[#111111] text-white"
-                  : "text-[#52525B]"
-              }`}
+              onClick={() => void loadInventory()}
+              aria-label="Reload inventory"
+              className="av-btn-outline flex h-8 w-8 items-center justify-center rounded-full"
             >
-              Unreturned
-            </button>
-            <button
-              type="button"
-              onClick={() => setBorrowFilter("all")}
-              className={`rounded-full px-3.5 py-1.5 font-semibold transition ${
-                borrowFilter === "all"
-                  ? "bg-[#111111] text-white"
-                  : "text-[#52525B]"
-              }`}
-            >
-              All History
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+              />
             </button>
           </div>
         </div>
@@ -392,8 +521,7 @@ export function InventoryTab({
           ) : (
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
-                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
-                  <th className="w-8 pb-1 pl-3" />
+                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                   <th className="px-3 pb-1">Customer</th>
                   <th className="px-3 pb-1">Balance</th>
                   <th className="px-3 pb-1">Deposit</th>
@@ -407,38 +535,29 @@ export function InventoryTab({
                   return (
                     <tr
                       key={b.id}
-                      className="rounded-2xl bg-[#F7F7F9] font-medium transition hover:bg-[#F0F0F3]"
+                      className="rounded-2xl bg-[var(--av-surface-subtle)] font-medium transition hover:bg-[var(--av-surface-hover)]"
                     >
-                      <td className="rounded-l-2xl py-3 pl-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedBorrowed.has(b.id)}
-                          onChange={() => toggleSelectBorrow(b.id)}
-                          aria-label={`Select ${b.customer_name}`}
-                          className="h-4 w-4 rounded border-[#D4D4D8] accent-[#111111]"
-                        />
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="font-bold text-[#111111]">
+                      <td className="rounded-l-2xl px-3 py-3">
+                        <div className="font-bold text-[var(--av-ink)]">
                           {b.customer_name}
                         </div>
-                        <div className="text-[11px] font-normal text-[#71717A]">
+                        <div className="text-[11px] font-normal text-[var(--av-muted)]">
                           {[b.customer_address, b.customer_phone, b.borrowed_date]
                             .filter(Boolean)
                             .join(" · ")}
                         </div>
                       </td>
                       <td className="px-3 py-3 tabular-nums">
-                        <span className="font-bold text-[#111111]">
+                        <span className="font-bold text-[var(--av-ink)]">
                           {b.qty_returned}/{b.qty_borrowed} returned
                         </span>
                         {remaining > 0 && (
-                          <span className="ml-2 text-[#52525B]">
+                          <span className="ml-2 text-[var(--av-muted)]">
                             ({remaining} out)
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-3 text-[#52525B] tabular-nums">
+                      <td className="px-3 py-3 text-[var(--av-ink-secondary)] tabular-nums">
                         {b.deposit_amount > 0
                           ? formatPHP(b.deposit_amount)
                           : "—"}
@@ -454,9 +573,9 @@ export function InventoryTab({
                           }
                           tone={
                             b.status === "returned"
-                              ? "outline"
+                              ? "green"
                               : b.status === "partial"
-                                ? "soft"
+                                ? "yellow"
                                 : "solid"
                           }
                           dot
@@ -466,24 +585,25 @@ export function InventoryTab({
                         {remaining > 0 ? (
                           <div className="inline-flex items-center gap-1.5">
                             <input
-                              type="number"
-                              min={1}
-                              max={remaining}
-                              value={returnInputs[b.id] ?? String(remaining)}
+                              type="text"
+                              inputMode="numeric"
+                              value={returnInputs[b.id] ?? ""}
+                              onKeyDown={(e) => handleIntegerKeyDown(e, false)}
                               onChange={(e) =>
                                 setReturnInputs((prev) => ({
                                   ...prev,
-                                  [b.id]: e.target.value,
+                                  [b.id]: sanitizeIntegerInput(e.target.value),
                                 }))
                               }
+                              placeholder={String(remaining)}
                               aria-label={`Return qty for ${b.customer_name}`}
-                              className="w-14 rounded-full border border-[#D4D4D8] bg-white px-2 py-1 text-center text-xs font-bold text-[#111111] tabular-nums"
+                              className="av-input w-14 rounded-full bg-[var(--av-surface)] px-2 py-1 text-center text-xs font-bold tabular-nums"
                             />
                             <button
                               type="button"
                               disabled={returningId === b.id}
                               onClick={() => void handleReturnGallons(b)}
-                              className="rounded-full bg-[#111111] px-3 py-1 text-[11px] font-semibold text-white hover:bg-black/85 disabled:opacity-40"
+                              className="av-btn-primary rounded-full px-3 py-1 text-[11px] font-semibold disabled:opacity-40"
                             >
                               {returningId === b.id ? "..." : "Return"}
                             </button>
@@ -499,7 +619,7 @@ export function InventoryTab({
                             />
                           </div>
                         ) : (
-                          <span className="text-[11px] text-[#A1A1AA]">
+                          <span className="text-[11px] text-[var(--av-muted)]">
                             Completed
                           </span>
                         )}
@@ -513,19 +633,19 @@ export function InventoryTab({
         </div>
       </div>
 
-      {/* Today's Stock Changes */}
+      {/* Recent Stock Changes */}
       <div className="av-card p-6">
-        <h3 className="text-base font-bold text-[#111111]">
-          Today&apos;s Stock Changes ({data.logs.length})
+        <h3 className="text-base font-bold text-[var(--av-ink)]">
+          Recent Stock Changes ({logs.length})
         </h3>
         <div className="mt-4 overflow-x-auto">
-          {data.logs.length === 0 ? (
-            <EmptyState title={`No stock changes for ${businessDate}`} />
+          {logs.length === 0 ? (
+            <EmptyState title="No stock changes recorded yet" />
           ) : (
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
-                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
-                  <th className="px-3 pb-1">Time</th>
+                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
+                  <th className="px-3 pb-1">Date &amp; Time</th>
                   <th className="px-3 pb-1">Activity</th>
                   <th className="px-3 pb-1">Change</th>
                   <th className="px-3 pb-1">Stock Left</th>
@@ -533,12 +653,13 @@ export function InventoryTab({
                 </tr>
               </thead>
               <tbody>
-                {data.logs.map((log) => (
+                {logs.map((log) => (
                   <tr
                     key={log.id}
-                    className="rounded-2xl bg-[#F7F7F9] font-medium"
+                    className="rounded-2xl bg-[var(--av-surface-subtle)] font-medium"
                   >
-                    <td className="rounded-l-2xl px-3 py-2.5 text-[11px] text-[#71717A] tabular-nums">
+                    <td className="rounded-l-2xl px-3 py-2.5 text-[11px] text-[var(--av-muted)] tabular-nums">
+                      {log.business_date} ·{" "}
                       {new Date(log.created_at).toLocaleTimeString()}
                     </td>
                     <td className="px-3 py-2.5">
@@ -547,18 +668,18 @@ export function InventoryTab({
                           MOVEMENT_LABELS[log.movement_type] ??
                           log.movement_type
                         }
-                        tone="soft"
+                        tone="outline"
                       />
                     </td>
-                    <td className="px-3 py-2.5 font-bold text-[#111111] tabular-nums">
+                    <td className="px-3 py-2.5 font-bold text-[var(--av-ink)] tabular-nums">
                       {log.quantity_delta >= 0
                         ? `+${log.quantity_delta}`
                         : log.quantity_delta}
                     </td>
-                    <td className="px-3 py-2.5 font-bold text-[#111111] tabular-nums">
+                    <td className="px-3 py-2.5 font-bold text-[var(--av-ink)] tabular-nums">
                       {log.balance_after}
                     </td>
-                    <td className="rounded-r-2xl px-3 py-2.5 text-[#71717A]">
+                    <td className="rounded-r-2xl px-3 py-2.5 text-[var(--av-muted)]">
                       {log.notes || "—"}
                     </td>
                   </tr>

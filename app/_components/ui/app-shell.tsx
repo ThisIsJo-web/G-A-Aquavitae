@@ -3,6 +3,8 @@
 import { Droplets, LogOut, Menu, X } from "lucide-react";
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
+import { trackAction } from "@/app/_components/activity-tracker";
+import { ThemeToggleButton } from "@/app/_components/theme-provider";
 
 export interface AppNavItem {
   id: string;
@@ -12,6 +14,12 @@ export interface AppNavItem {
   href?: string;
 }
 
+export interface AppSidebarLink {
+  href: string;
+  label: string;
+  icon: ReactNode;
+}
+
 interface AppShellProps {
   roleLabel: string;
   pageTitle: string;
@@ -19,11 +27,8 @@ interface AppShellProps {
   navItems: AppNavItem[];
   activeNavId: string;
   onSelectNav?: (id: string) => void;
-  secondaryLink?: {
-    href: string;
-    label: string;
-    icon: ReactNode;
-  };
+  secondaryLink?: AppSidebarLink;
+  secondaryLinks?: AppSidebarLink[];
   secondaryAction?: {
     label: string;
     sublabel?: string;
@@ -59,6 +64,7 @@ export function AppShell({
   activeNavId,
   onSelectNav,
   secondaryLink,
+  secondaryLinks,
   secondaryAction,
   headerActions,
   topBanner,
@@ -70,20 +76,25 @@ export function AppShell({
   const [mobileOpen, setMobileOpen] = useState(false);
   const initials = getInitials(user.name, user.email);
 
+  const allSecondaryLinks: AppSidebarLink[] = [
+    ...(secondaryLink ? [secondaryLink] : []),
+    ...(secondaryLinks ?? []),
+  ];
+
   const sidebarContent = (
     <div className="flex h-full flex-col justify-between p-4">
       <div className="space-y-6">
         {/* Brand Header */}
         <div className="flex items-center justify-between px-2 pt-1">
           <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#111111] text-white">
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--av-blue-soft)] text-[var(--av-blue-ink)] ring-1 ring-[var(--av-blue-border)]">
               <Droplets className="h-5 w-5" strokeWidth={2} />
             </span>
             <div>
-              <div className="text-[15px] font-bold leading-tight tracking-tight text-[#111111]">
+              <div className="text-[15px] font-bold leading-tight tracking-tight text-[var(--av-ink)]">
                 G &amp; A Aqua Vitae
               </div>
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-blue-ink)]">
                 {roleLabel}
               </div>
             </div>
@@ -93,7 +104,7 @@ export function AppShell({
             type="button"
             onClick={() => setMobileOpen(false)}
             aria-label="Close navigation"
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-[#F2F2F4] text-[#111111] lg:hidden"
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--av-surface-subtle)] text-[var(--av-ink)] lg:hidden"
           >
             <X className="h-4 w-4" />
           </button>
@@ -105,8 +116,8 @@ export function AppShell({
             const isActive = item.id === activeNavId;
             const sharedClass = `group flex w-full items-center justify-between gap-3 rounded-full px-3 py-2 text-left text-sm font-semibold transition ${
               isActive
-                ? "bg-[#111111] text-white shadow-[0_6px_16px_rgba(17,17,17,0.16)]"
-                : "text-[#3F3F46] hover:bg-[#EFEFF2] hover:text-[#111111]"
+                ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)] ring-1 ring-[var(--av-blue-border)] shadow-[0_6px_16px_rgba(20,18,14,0.16)]"
+                : "text-[var(--av-ink-secondary)] hover:bg-[var(--av-surface-subtle)] hover:text-[var(--av-ink)]"
             }`;
 
             const inner = (
@@ -115,8 +126,8 @@ export function AppShell({
                   <span
                     className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${
                       isActive
-                        ? "bg-white/15 text-white"
-                        : "bg-[#F2F2F4] text-[#111111] group-hover:bg-white"
+                        ? "bg-[var(--av-blue)] text-white"
+                        : "bg-[var(--av-surface-subtle)] text-[var(--av-ink)] group-hover:bg-[var(--av-blue-soft)] group-hover:text-[var(--av-blue-ink)]"
                     }`}
                   >
                     {item.icon}
@@ -127,8 +138,8 @@ export function AppShell({
                   <span
                     className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums ${
                       isActive
-                        ? "bg-white/20 text-white"
-                        : "bg-[#F2F2F4] text-[#52525B]"
+                        ? "bg-[var(--av-accent-ink)]/18 text-[var(--av-accent-ink)]"
+                        : "bg-[var(--av-blue-soft)] text-[var(--av-blue-ink)]"
                     }`}
                   >
                     {item.badge}
@@ -142,7 +153,14 @@ export function AppShell({
                 <Link
                   key={item.id}
                   href={item.href}
-                  onClick={() => setMobileOpen(false)}
+                  onClick={() => {
+                    trackAction({
+                      module: "navigation",
+                      action: `Opened ${item.label}`,
+                      controlLabel: item.label,
+                    });
+                    setMobileOpen(false);
+                  }}
                   className={sharedClass}
                 >
                   {inner}
@@ -155,6 +173,11 @@ export function AppShell({
                 key={item.id}
                 type="button"
                 onClick={() => {
+                  trackAction({
+                    module: "navigation",
+                    action: `Opened ${item.label} tab`,
+                    controlLabel: item.label,
+                  });
                   onSelectNav?.(item.id);
                   setMobileOpen(false);
                 }}
@@ -166,32 +189,46 @@ export function AppShell({
           })}
         </nav>
 
-        {(secondaryLink || secondaryAction) && (
-          <div className="space-y-2 border-t border-[#ECECEF] pt-4">
-            {secondaryLink && (
+        {(allSecondaryLinks.length > 0 || secondaryAction) && (
+          <div className="space-y-2 border-t border-[var(--av-border)] pt-4">
+            {allSecondaryLinks.map((link) => (
               <Link
-                href={secondaryLink.href}
-                onClick={() => setMobileOpen(false)}
-                className="flex w-full items-center gap-3 rounded-full border border-[#E4E4E7] bg-white px-3 py-2 text-xs font-semibold text-[#111111] transition hover:bg-[#F4F4F6]"
+                key={`${link.href}-${link.label}`}
+                href={link.href}
+                onClick={() => {
+                  trackAction({
+                    module: "navigation",
+                    action: `Navigated to ${link.label}`,
+                    controlLabel: link.label,
+                    targetLabel: link.href,
+                  });
+                  setMobileOpen(false);
+                }}
+                className="flex w-full items-center gap-3 rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3 py-2 text-xs font-semibold text-[var(--av-ink)] transition hover:border-[var(--av-blue-border)] hover:bg-[var(--av-blue-soft)]"
               >
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F2F2F4] text-[#111111]">
-                  {secondaryLink.icon}
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--av-blue-soft)] text-[var(--av-blue-ink)]">
+                  {link.icon}
                 </span>
-                <span className="truncate">{secondaryLink.label}</span>
+                <span className="truncate">{link.label}</span>
               </Link>
-            )}
+            ))}
 
             {secondaryAction && (
               <button
                 type="button"
                 disabled={secondaryAction.disabled}
                 onClick={() => {
+                  trackAction({
+                    module: "navigation",
+                    action: `Clicked ${secondaryAction.label}`,
+                    controlLabel: secondaryAction.label,
+                  });
                   setMobileOpen(false);
                   secondaryAction.onClick();
                 }}
-                className="flex w-full items-center gap-3 rounded-2xl border border-[#111111] bg-white px-3 py-2.5 text-left text-xs font-semibold text-[#111111] transition hover:bg-[#111111] hover:text-white disabled:opacity-50"
+                className="flex w-full items-center gap-3 rounded-2xl border border-[var(--av-ink)] bg-[var(--av-surface)] px-3 py-2.5 text-left text-xs font-semibold text-[var(--av-ink)] transition hover:bg-[var(--av-accent)] hover:text-[var(--av-accent-ink)] disabled:opacity-50"
               >
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F2F2F4] text-[#111111]">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--av-surface-subtle)] text-[var(--av-ink)]">
                   {secondaryAction.icon}
                 </span>
                 <span className="min-w-0">
@@ -209,17 +246,17 @@ export function AppShell({
       </div>
 
       {/* Pinned User Footer */}
-      <div className="mt-6 border-t border-[#ECECEF] pt-4">
-        <div className="flex items-center justify-between gap-2 rounded-2xl bg-[#F6F6F8] p-2.5">
+      <div className="mt-6 border-t border-[var(--av-border)] pt-4">
+        <div className="flex items-center justify-between gap-2 rounded-2xl bg-[var(--av-surface-subtle)] p-2.5">
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#111111] text-xs font-bold text-white">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--av-accent)] text-xs font-bold text-[var(--av-accent-ink)]">
               {initials}
             </span>
             <div className="min-w-0">
-              <div className="truncate text-xs font-semibold text-[#111111]">
+              <div className="truncate text-xs font-semibold text-[var(--av-ink)]">
                 {user.name}
               </div>
-              <div className="truncate text-[11px] font-normal text-[#71717A]">
+              <div className="truncate text-[11px] font-normal text-[var(--av-muted)]">
                 {user.email}
               </div>
             </div>
@@ -231,7 +268,7 @@ export function AppShell({
             disabled={signingOut}
             title="Sign out"
             aria-label="Sign out"
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-[#111111] ring-1 ring-[#E4E4E7] transition hover:bg-[#111111] hover:text-white disabled:opacity-50"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--av-surface)] text-[var(--av-ink)] ring-1 ring-[var(--av-border-strong)] transition hover:bg-[var(--av-accent)] hover:text-[var(--av-accent-ink)] disabled:opacity-50"
           >
             <LogOut className="h-3.5 w-3.5" />
           </button>
@@ -241,10 +278,10 @@ export function AppShell({
   );
 
   return (
-    <div className="min-h-screen bg-[#EFEFF2] p-2 sm:p-4 lg:p-6">
-      <div className="mx-auto flex min-h-[calc(100vh-1rem)] max-w-[1440px] overflow-hidden rounded-[24px] border border-[#E5E5EA] bg-[#F7F7F9] shadow-[0_12px_40px_rgba(0,0,0,0.04)] sm:min-h-[calc(100vh-2rem)] lg:min-h-[calc(100vh-3rem)] lg:rounded-[28px]">
+    <div className="min-h-screen bg-[var(--av-backdrop)] p-0 sm:p-3 md:p-4 lg:p-6">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1680px] overflow-x-clip bg-[var(--av-canvas)] sm:min-h-[calc(100vh-1.5rem)] sm:overflow-hidden sm:rounded-[24px] sm:border sm:border-[var(--av-border)] sm:shadow-[0_12px_40px_rgba(20,18,14,0.06)] md:min-h-[calc(100vh-2rem)] lg:min-h-[calc(100vh-3rem)] lg:rounded-[28px]">
         {/* Desktop Sidebar */}
-        <aside className="hidden w-[264px] shrink-0 border-r border-[#EAEAEF] bg-white lg:block">
+        <aside className="hidden w-[248px] shrink-0 border-r border-[var(--av-border)] bg-[var(--av-surface)] lg:block xl:w-[264px]">
           {sidebarContent}
         </aside>
 
@@ -252,11 +289,11 @@ export function AppShell({
         {mobileOpen && (
           <div className="fixed inset-0 z-50 flex lg:hidden">
             <div
-              className="fixed inset-0 bg-black/30 backdrop-blur-[1px]"
+              className="fixed inset-0 bg-black/40 backdrop-blur-[1px]"
               onClick={() => setMobileOpen(false)}
               aria-hidden="true"
             />
-            <aside className="relative z-10 flex w-[280px] max-w-[85vw] flex-col bg-white shadow-2xl">
+            <aside className="relative z-10 flex w-[280px] max-w-[85vw] flex-col bg-[var(--av-surface)] shadow-2xl">
               {sidebarContent}
             </aside>
           </div>
@@ -264,38 +301,39 @@ export function AppShell({
 
         {/* Main Workspace Canvas */}
         <div className="flex min-w-0 flex-1 flex-col">
+          {/* Subtle Top Aqua Accent Hairline */}
+          <div aria-hidden="true" className="av-top-accent" />
           {/* Top Bar */}
-          <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#ECECEF] bg-white/80 px-4 py-4 backdrop-blur-xs sm:px-6 lg:px-8">
-            <div className="flex items-center gap-3">
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--av-border)] bg-[var(--av-surface)]/95 px-4 py-3.5 backdrop-blur-xs sm:gap-4 sm:px-6 sm:py-4 lg:px-8">
+            <div className="flex min-w-0 items-center gap-3">
               <button
                 type="button"
                 onClick={() => setMobileOpen(true)}
                 aria-label="Open navigation"
-                className="flex h-10 w-10 items-center justify-center rounded-full border border-[#E4E4E7] bg-white text-[#111111] transition hover:bg-[#F4F4F6] lg:hidden"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink)] transition hover:bg-[var(--av-surface-subtle)] lg:hidden"
               >
                 <Menu className="h-5 w-5" />
               </button>
-              <div>
-                <h1 className="text-xl font-bold tracking-tight text-[#111111] sm:text-2xl">
+              <div className="min-w-0">
+                <h1 className="truncate text-lg font-bold tracking-tight text-[var(--av-ink)] sm:text-xl lg:text-2xl">
                   {pageTitle}
                 </h1>
                 {pageSubtitle && (
-                  <p className="text-xs font-normal text-[#71717A]">
+                  <p className="line-clamp-2 text-xs font-normal text-[var(--av-muted)] sm:line-clamp-1">
                     {pageSubtitle}
                   </p>
                 )}
               </div>
             </div>
 
-            {headerActions && (
-              <div className="flex flex-wrap items-center gap-2">
-                {headerActions}
-              </div>
-            )}
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+              {headerActions}
+              <ThemeToggleButton />
+            </div>
           </header>
 
           {/* Content Area */}
-          <main className="flex-1 space-y-6 p-4 sm:p-6 lg:p-8">
+          <main className="min-w-0 flex-1 space-y-5 p-4 sm:space-y-6 sm:p-6 lg:p-8">
             {topBanner}
             {children}
           </main>

@@ -10,6 +10,7 @@ import type {
 } from "@/backend/db/types";
 import { AuthServiceError } from "@/backend/services/auth";
 import {
+  clampDateToWindow,
   getTodayBusinessDate,
   sanitizeBusinessDate,
   toNumber,
@@ -398,6 +399,20 @@ export async function verifyOwnerAuditChain(
   };
 }
 
+/**
+ * Ultra-fast count of audit entries for sidebar badge (avoids 5,000-row scan on initial SSR).
+ */
+export async function getOwnerAuditEntryCount(ownerId: string): Promise<number> {
+  const admin = createSupabaseAdminClient();
+  const { count, error } = await admin
+    .from("financial_audit_logs")
+    .select("id", { count: "exact", head: true })
+    .eq("owner_id", ownerId);
+
+  if (error) return 0;
+  return count ?? 0;
+}
+
 export async function queryOwnerAuditLedger(
   ownerId: string,
   options: {
@@ -410,8 +425,9 @@ export async function queryOwnerAuditLedger(
   } = {}
 ): Promise<OwnerAuditLedgerResult> {
   const today = getTodayBusinessDate();
-  const toDate = sanitizeBusinessDate(options.to ?? today);
-  const fromDate = sanitizeBusinessDate(options.from ?? addDays(toDate, -29));
+  const toDate = clampDateToWindow(options.to ?? today, 365);
+  const rawFrom = clampDateToWindow(options.from ?? addDays(toDate, -29), 365);
+  const fromDate = rawFrom > toDate ? toDate : rawFrom;
   const limit = Math.min(Math.max(10, options.limit ?? 200), 1000);
   const bucket: AuditBucketFilter = options.bucket ?? "all";
   const moduleFilter =

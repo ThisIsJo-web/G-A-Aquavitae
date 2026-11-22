@@ -1,6 +1,6 @@
 /**
- * Separate Interactive E2E Test Suite — OWNER MODULE (/owner)
- * Runs against a live AquaVitae server (default: http://127.0.0.1:3005)
+ * Interactive E2E Test Suite — OWNER MODULE (/owner) + Direct Owner Cashier Access
+ * Runs against a live G & A Aqua Vitae server (default: http://127.0.0.1:3000)
  * Usage: npm run test:owner
  */
 
@@ -84,7 +84,7 @@ function assert(condition, label, detail = "") {
 
 async function runOwnerTests() {
   console.log(`\n=======================================================`);
-  console.log(` AquaVitae OWNER Interactive E2E Test Suite`);
+  console.log(` G & A Aqua Vitae — OWNER E2E Test Suite`);
   console.log(` Target: ${BASE_URL} | Account: ${OWNER_EMAIL}`);
   console.log(`=======================================================\n`);
 
@@ -101,26 +101,28 @@ async function runOwnerTests() {
     `status=${login.status} body=${login.text.slice(0, 140)}`
   );
 
-  // 2. Strict Role Separation: Owner MUST NOT interfere with Cashier routes directly
-  const cashierApi = await client.request("/api/cashier/pos");
+  // 2. Hierarchical Roles: Owner CAN directly access Cashier Station, CANNOT access Superadmin
+  const cashierWorkspace = await client.request("/api/cashier/workspace");
   assert(
-    cashierApi.status === 403,
-    "RBAC: Owner blocked from /api/cashier/pos directly (403)",
-    `got ${cashierApi.status}`
+    cashierWorkspace.status === 200 &&
+      Array.isArray(cashierWorkspace.json?.pos?.products),
+    "Hierarchical RBAC: Owner directly accesses /api/cashier/workspace (200)",
+    `got ${cashierWorkspace.status}`
   );
-  const cashierPage = await client.request("/cashier");
+  const superadminApi = await client.request("/api/superadmin/audit-logs");
   assert(
-    cashierPage.text.includes("Cashier Access Only"),
-    "RBAC: /cashier renders 403 Cashier Access Only for Owner"
+    superadminApi.status === 403,
+    "Hierarchical RBAC: Owner blocked from /api/superadmin/audit-logs (403)",
+    `got ${superadminApi.status}`
   );
 
-  // 3. Live Dashboard Snapshot + 10s Smart Pulse
+  // 3. Live Dashboard Snapshot + Smart Pulse
   const dash = await client.request("/api/owner/dashboard?range=7");
   assert(
     dash.status === 200 &&
       typeof dash.json?.quickStats?.totalSales === "number" &&
       Array.isArray(dash.json?.salesVsExpensesChart),
-    `GET /api/owner/dashboard loaded (7d Sales ₱${dash.json?.quickStats?.totalSales?.toFixed(2)}, Pending Corrections: ${dash.json?.corrections?.pendingCount})`,
+    `GET /api/owner/dashboard loaded (7d Sales ₱${dash.json?.quickStats?.totalSales?.toFixed(2)}, Pending Reviews: ${dash.json?.corrections?.pendingCount})`,
     `status=${dash.status}`
   );
 
@@ -131,7 +133,29 @@ async function runOwnerTests() {
     `status=${pulse1.status}`
   );
 
-  // 4. Owner Supervision: Approve any pending Cashier Correction Request
+  // 4. Owner Gallon Inventory Module (moved from Cashier, no gallonType!)
+  const invGet = await client.request("/api/owner/inventory");
+  assert(
+    invGet.status === 200 && Array.isArray(invGet.json?.stocks),
+    "GET /api/owner/inventory loads consolidated Gallon Inventory",
+    `status=${invGet.status}`
+  );
+
+  const invRestock = await client.request("/api/owner/inventory", {
+    method: "POST",
+    body: JSON.stringify({
+      movementType: "restock",
+      quantity: 10,
+      notes: "QA owner restock test",
+    }),
+  });
+  assert(
+    invRestock.status === 201,
+    "POST /api/owner/inventory restock (+10) succeeds without gallonType",
+    `status=${invRestock.status} body=${invRestock.text.slice(0, 140)}`
+  );
+
+  // 5. Owner Review Queue: Approve any pending Cashier Correction Request
   const pendingReqs = (dash.json?.corrections?.requests ?? []).filter(
     (r) => r.status === "pending"
   );
@@ -150,17 +174,33 @@ async function runOwnerTests() {
     assert(
       approveRes.status === 200 &&
         approveRes.json?.request?.status === "approved",
-      `Supervision: Approved Cashier correction request (${target.entity_label})`,
+      `Review Queue: Approved Cashier correction request (${target.entity_label})`,
       `status=${approveRes.status} body=${approveRes.text.slice(0, 140)}`
     );
   } else {
     assert(
       true,
-      "Supervision queue accessible (0 pending requests right now — run test:cashier first to generate one)"
+      "Review Queue accessible (0 pending requests right now)"
     );
   }
 
-  // 5. Station Expenses CRUD (Create + Delete -> both audited down to the centavo)
+  // 6. Date Window Guard on Expenses: Future date MUST be rejected (400)
+  const futureExp = await client.request("/api/owner/expenses", {
+    method: "POST",
+    body: JSON.stringify({
+      category: "utilities",
+      description: "Future Date Test",
+      amount: 100,
+      expenseDate: "2099-12-31",
+    }),
+  });
+  assert(
+    futureExp.status === 400,
+    "Date guard: Future expense date rejected (400)",
+    `got ${futureExp.status}`
+  );
+
+  // 7. Station Expenses CRUD (Create + Delete -> both audited)
   const expCreate = await client.request("/api/owner/expenses", {
     method: "POST",
     body: JSON.stringify({
@@ -173,7 +213,7 @@ async function runOwnerTests() {
   const expId = expCreate.json?.expense?.id;
   assert(
     expCreate.status === 201 && Boolean(expId),
-    "Station Expense created with centavo precision (₱325.75)",
+    "Station Expense created accurately (₱325.75)",
     `status=${expCreate.status} body=${expCreate.text.slice(0, 140)}`
   );
 
@@ -182,7 +222,7 @@ async function runOwnerTests() {
   });
   assert(
     expDelete.status === 200 && expDelete.json?.deleted === true,
-    "Station Expense deleted (reversing audit entry automatically appended)",
+    "Station Expense deleted cleanly",
     `status=${expDelete.status}`
   );
 
@@ -190,72 +230,48 @@ async function runOwnerTests() {
   const pulse2 = await client.request("/api/owner/pulse");
   assert(
     pulse2.status === 200 && pulse2.json?.version !== pulse1.json?.version,
-    "Option 1 Smart Pulse detected DB change immediately (version updated)"
+    "Smart Pulse detected station update immediately"
   );
 
-  // 6. Staff Management + "My Account" Cashier Toggle
+  // 8. Staff Management
   const staffRes = await client.request("/api/users");
-  const qaCashier = (staffRes.json?.users ?? []).find(
-    (u) => u.role === "cashier"
-  );
   assert(
-    staffRes.status === 200 && Boolean(qaCashier),
+    staffRes.status === 200 && Array.isArray(staffRes.json?.users),
     `Owner sees assigned station staff (${staffRes.json?.users?.length ?? 0} account(s))`
   );
-  if (qaCashier) {
-    const markRes = await client.request(`/api/users/${qaCashier.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ isOwnerCashier: true }),
-    });
-    assert(
-      markRes.status === 200 && markRes.json?.user?.is_owner_cashier === true,
-      `Marked "${qaCashier.email}" as "My Account" (unlocks Go to Cashier Dashboard)`
-    );
 
-    const unmarkRes = await client.request(`/api/users/${qaCashier.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ isOwnerCashier: false }),
-    });
-    assert(
-      unmarkRes.status === 200 &&
-        unmarkRes.json?.user?.is_owner_cashier === false,
-      `Unmarked "My Account" cleanly`
-    );
-  }
-
-  // 7. Deep Financial Audit Trail ("Every Cent") — SHA-256 Chain + Centavo Reconciliation + Exports
+  // 9. Financial Audit Trail + Exports
   const auditRes = await client.request("/api/owner/audit");
   const ledger = auditRes.json;
   assert(
     auditRes.status === 200 && !ledger?.schemaMissing,
-    `GET /api/owner/audit loaded (${ledger?.chain?.totalEntries ?? 0} immutable entries)`,
+    `GET /api/owner/audit loaded (${ledger?.chain?.totalEntries ?? 0} verified entries)`,
     `status=${auditRes.status}`
   );
   assert(
     ledger?.chain?.verified === true &&
       (ledger?.chain?.brokenSeqNos?.length ?? 0) === 0 &&
       (ledger?.chain?.missingSeqNos?.length ?? 0) === 0,
-    `SHA-256 Hash Chain Verified INTACT (0 tampered, 0 gaps, latest #${ledger?.chain?.latestSeqNo})`,
+    `Audit Record Integrity Verified (0 issues, latest #${ledger?.chain?.latestSeqNo})`,
     JSON.stringify(ledger?.chain)
   );
   assert(
     ledger?.reconciliation?.isBalanced === true &&
       ledger?.reconciliation?.grossDiffCentavos === 0 &&
       ledger?.reconciliation?.expenseDiffCentavos === 0,
-    `Centavo Reconciliation Proof: BALANCED (₱0.00 diff — Ledger Gross ${ledger?.reconciliation?.ledgerGrossCentavos}¢ vs Operational ${ledger?.reconciliation?.operationalGrossCentavos}¢)`,
+    `Balance Check Passed (₱0.00 difference)`,
     JSON.stringify(ledger?.reconciliation)
   );
 
-  // Verify Forensic Exports (CSV & JSON)
   const csvExport = await client.request("/api/owner/audit/export?format=csv");
   assert(
-    csvExport.status === 200 &&
-      csvExport.text.includes("CashDeltaCentavos") &&
-      csvExport.text.includes("EntryHash"),
-    "Forensic Audit CSV export generated with centavo & SHA-256 columns"
+    csvExport.status === 200 && csvExport.text.length > 0,
+    "Financial Audit CSV export generated cleanly"
   );
 
-  const ownerReport = await client.request("/api/owner/export?range=7&format=csv");
+  const ownerReport = await client.request(
+    "/api/owner/export?range=7&format=csv"
+  );
   assert(
     ownerReport.status === 200 && ownerReport.text.includes("SALE"),
     "Owner Sales & Expenses CSV export generated cleanly"

@@ -9,6 +9,7 @@ import {
   toCentavos,
 } from "@/backend/services/audit-ledger";
 import {
+  assertOperationalDateAllowed,
   isMissingCashierSchemaError,
   roundMoney,
   sanitizeBusinessDate,
@@ -138,18 +139,34 @@ export async function createVendoCollection(
   ownerId: string,
   input: CreateVendoCollectionInput
 ): Promise<VendoCollectionRow> {
-  const businessDate = sanitizeBusinessDate(input.businessDate);
+  const businessDate = assertOperationalDateAllowed(
+    input.businessDate,
+    7,
+    "Collection date"
+  );
   const amount = roundMoney(Number(input.amount));
 
   if (!Number.isFinite(amount) || amount < 0) {
     throw new AuthServiceError("Collection amount must be 0 or greater", 400);
   }
 
-  const periodEnd = sanitizeBusinessDate(input.periodEnd ?? businessDate);
-  const periodStart = sanitizeBusinessDate(
-    input.periodStart ??
-      (input.periodType === "weekly" ? addDays(periodEnd, -6) : periodEnd)
+  const periodEnd = assertOperationalDateAllowed(
+    input.periodEnd ?? businessDate,
+    7,
+    "Period end date"
   );
+  const periodStart = assertOperationalDateAllowed(
+    input.periodStart ??
+      (input.periodType === "weekly" ? addDays(periodEnd, -6) : periodEnd),
+    14,
+    "Period start date"
+  );
+  if (periodStart > periodEnd) {
+    throw new AuthServiceError(
+      "Start date cannot be after end date.",
+      400
+    );
+  }
 
   const admin = createSupabaseAdminClient();
   const { data, error } = await admin

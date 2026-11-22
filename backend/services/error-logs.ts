@@ -182,18 +182,18 @@ const SEVERITY_SECTION_META: {
 }[] = [
   {
     key: "critical",
-    title: "Critical",
-    description: "Outages, fatal 5xx failures, and unreachable dependencies",
+    title: "Critical Priority",
+    description: "Service outages and major failures that need immediate attention",
   },
   {
     key: "error",
-    title: "Error",
-    description: "Failed API operations, query errors, and runtime exceptions",
+    title: "Error Priority",
+    description: "Failed actions and system errors that should be reviewed soon",
   },
   {
     key: "warning",
-    title: "Warning",
-    description: "Degraded latency, auth anomalies, and non-fatal issues",
+    title: "Needs Attention",
+    description: "Slow responses, login notices, and minor alerts",
   },
 ];
 
@@ -204,18 +204,18 @@ const LAYER_SECTION_META: {
 }[] = [
   {
     key: "backend",
-    title: "Backend & API",
-    description: "Next.js Route Handlers, server services, and system jobs",
+    title: "Server",
+    description: "Background station services and request handling",
   },
   {
     key: "database_auth",
-    title: "Database & Auth",
-    description: "Supabase Postgres queries, RLS, sessions, and JWKS auth",
+    title: "Database & Sign-In",
+    description: "Data storage, account access, and active sessions",
   },
   {
     key: "frontend",
-    title: "Frontend & Client",
-    description: "Client-side rendering, UI actions, and browser network errors",
+    title: "App Screen",
+    description: "Display issues, button actions, and connection drops",
   },
 ];
 

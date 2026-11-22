@@ -14,13 +14,19 @@ export interface AuthUser {
   metadata: Record<string, unknown>;
 }
 
+function safeStatus(status: number | undefined | null, fallback: number): number {
+  return typeof status === "number" && Number.isInteger(status) && status >= 200 && status <= 599
+    ? status
+    : fallback;
+}
+
 export class AuthServiceError extends Error {
   readonly status: number;
 
   constructor(message: string, status = 400) {
     super(message);
     this.name = "AuthServiceError";
-    this.status = status;
+    this.status = safeStatus(status, 500);
   }
 }
 
@@ -96,10 +102,12 @@ export async function signIn({
   });
 
   if (error || !data.user) {
-    throw new AuthServiceError(
-      error?.message ?? "Invalid login credentials",
-      error?.status ?? 401
-    );
+    const status = safeStatus(error?.status, error?.status === 0 ? 502 : 401);
+    const message =
+      status === 502
+        ? "Unable to reach the sign-in service right now. Please try again."
+        : (error?.message ?? "Invalid email or password");
+    throw new AuthServiceError(message, status);
   }
 
   const { data: profile } = await supabase

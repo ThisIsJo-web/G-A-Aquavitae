@@ -3,15 +3,19 @@
 import {
   Activity,
   AlertTriangle,
+  ClipboardList,
+  LayoutDashboard,
   RefreshCw,
-  ShieldCheck,
+  ShoppingBag,
   Users,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { trackAction } from "@/app/_components/activity-tracker";
 import { AppShell, type AppNavItem } from "@/app/_components/ui/app-shell";
 import { StatusChip } from "@/app/_components/ui/monochrome-controls";
 import { AccountManagementPanel } from "./account-management-panel";
+import { ActivityAuditPanel } from "./activity-audit-panel";
 import { ErrorLogsBoard } from "./error-logs-board";
 import { ServiceHealthGrid } from "./service-health-grid";
 import type {
@@ -32,19 +36,19 @@ interface HealthDashboardProps {
   initialUsers: ManagedUserDTO[];
 }
 
-type ActiveSection = "health" | "logs" | "accounts";
+type ActiveSection = "health" | "logs" | "audit" | "accounts";
 
 function getStatusLabel(status: ServiceStatus): {
   label: string;
-  tone: "solid" | "soft" | "outline";
+  tone: "green" | "yellow" | "red";
 } {
   switch (status) {
     case "operational":
-      return { label: "All Systems Operational", tone: "solid" };
+      return { label: "Operational", tone: "green" };
     case "degraded":
-      return { label: "Degraded Performance", tone: "soft" };
+      return { label: "Needs Attention", tone: "yellow" };
     case "down":
-      return { label: "Incident Detected", tone: "outline" };
+      return { label: "Priority Issue", tone: "red" };
   }
 }
 
@@ -151,6 +155,11 @@ export function HealthDashboard({
 
   async function handleSignOut() {
     setSigningOut(true);
+    trackAction({
+      module: "auth",
+      action: "Signed out of Superadmin panel",
+      controlLabel: "Sign Out",
+    });
     try {
       await fetch("/api/auth/logout", { method: "POST" });
       router.push("/login");
@@ -173,6 +182,11 @@ export function HealthDashboard({
       badge: health.errors.unresolved,
     },
     {
+      id: "audit",
+      label: "Audit Logs",
+      icon: <ClipboardList className="h-4 w-4" />,
+    },
+    {
       id: "accounts",
       label: "Accounts & Roles",
       icon: <Users className="h-4 w-4" />,
@@ -186,21 +200,35 @@ export function HealthDashboard({
       ? "System Health"
       : activeSection === "logs"
         ? "Error Logs"
-        : "Accounts & Roles";
+        : activeSection === "audit"
+          ? "Audit Logs"
+          : "Accounts & Roles";
+
+  const pageSubtitle =
+    activeSection === "audit"
+      ? "Complete record of who did what across all accounts"
+      : `Last updated ${new Date(health.checkedAt).toLocaleTimeString()}`;
 
   return (
     <AppShell
       roleLabel="Superadmin"
       pageTitle={pageTitle}
-      pageSubtitle={`Last checked ${new Date(health.checkedAt).toLocaleTimeString()}`}
+      pageSubtitle={pageSubtitle}
       navItems={navItems}
       activeNavId={activeSection}
       onSelectNav={(id) => setActiveSection(id as ActiveSection)}
-      secondaryLink={{
-        href: "/cashier",
-        label: "Cashier Audit (2FA)",
-        icon: <ShieldCheck className="h-3.5 w-3.5" />,
-      }}
+      secondaryLinks={[
+        {
+          href: "/owner",
+          label: "Owner Dashboard",
+          icon: <LayoutDashboard className="h-3.5 w-3.5" />,
+        },
+        {
+          href: "/cashier",
+          label: "Cashier Station",
+          icon: <ShoppingBag className="h-3.5 w-3.5" />,
+        },
+      ]}
       user={{
         name: currentUser.fullName || "Superadmin",
         email: currentUser.email,
@@ -213,26 +241,45 @@ export function HealthDashboard({
 
           <button
             type="button"
-            onClick={() => setAutoRefresh((prev) => !prev)}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-2 text-xs font-semibold transition ${
+            onClick={() => {
+              setAutoRefresh((prev) => {
+                const next = !prev;
+                trackAction({
+                  module: "system",
+                  action: next ? "Enabled live auto-refresh" : "Paused live auto-refresh",
+                  controlLabel: next ? "Live Updates: ON" : "Live: Paused",
+                });
+                return next;
+              });
+            }}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-xs font-semibold transition ${
               autoRefresh
-                ? "border-[#111111] bg-[#111111] text-white"
-                : "border-[#D4D4D8] bg-white text-[#111111] hover:bg-[#F4F4F6]"
+                ? "border-[var(--av-accent)] bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                : "border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink)] hover:bg-[var(--av-surface-subtle)]"
             }`}
           >
             <span
               className={`h-1.5 w-1.5 rounded-full ${
-                autoRefresh ? "animate-pulse bg-white" : "bg-[#A1A1AA]"
+                autoRefresh
+                  ? "animate-pulse bg-[var(--av-accent-ink)]"
+                  : "bg-[var(--av-muted)]"
               }`}
             />
-            {autoRefresh ? "Live 15s: ON" : "Live: Paused"}
+            {autoRefresh ? "Live: ON" : "Live: Paused"}
           </button>
 
           <button
             type="button"
-            onClick={() => void refreshAll()}
+            onClick={() => {
+              trackAction({
+                module: "system",
+                action: "Manually refreshed Superadmin panel",
+                controlLabel: "Refresh",
+              });
+              void refreshAll();
+            }}
             disabled={refreshing}
-            className="inline-flex items-center gap-1.5 rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold text-white transition hover:bg-black/85 disabled:opacity-50"
+            className="av-btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-50"
           >
             <RefreshCw
               className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
@@ -259,6 +306,10 @@ export function HealthDashboard({
           refreshSignal={refreshSignal}
           onLogsMutated={refreshHealth}
         />
+      )}
+
+      {activeSection === "audit" && (
+        <ActivityAuditPanel refreshSignal={refreshSignal} />
       )}
 
       {activeSection === "accounts" && (

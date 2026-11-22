@@ -2,6 +2,7 @@
 
 import { Eye, EyeOff, KeyRound, UserPlus, Users } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { trackAction } from "@/app/_components/activity-tracker";
 import {
   EmptyState,
   NoticeBanner,
@@ -20,22 +21,22 @@ const ROLE_OPTIONS: { value: UserRole; label: string; hint: string }[] = [
   {
     value: "owner",
     label: "Owner",
-    hint: "Manages their station and creates cashier/staff accounts",
+    hint: "Full station dashboard, inventory, staff management, and direct cashier access",
   },
   {
     value: "cashier",
     label: "Cashier",
-    hint: "Operates Walk-in POS, Deliveries, Vendo, Inventory & Closing Shift",
+    hint: "Operates Walk-in Sales, Deliveries, Vendo Income, and Closing Shift",
   },
   {
     value: "staff",
     label: "Staff",
-    hint: "General station staff scoped to an owner",
+    hint: "General station staff linked to an owner",
   },
   {
     value: "superadmin",
     label: "Superadmin",
-    hint: "System health, error logs, and global account management",
+    hint: "Full system oversight, audit logs, accounts, plus direct Owner and Cashier access",
   },
 ];
 
@@ -109,9 +110,16 @@ export function AccountManagementPanel({
       };
 
       if (!response.ok || !data.user) {
-        setFormError(data.error ?? "Failed to create account");
+        setFormError(data.error ?? "Unable to create account.");
         return;
       }
+
+      trackAction({
+        module: "accounts",
+        action: `Created ${data.user.role} account`,
+        controlLabel: "Create Account",
+        targetLabel: data.user.email,
+      });
 
       setFormSuccess(
         `Created ${data.user.role} account for ${data.user.email}.`
@@ -122,7 +130,7 @@ export function AccountManagementPanel({
       setOwnerId("");
       await Promise.resolve(onUsersChanged());
     } catch {
-      setFormError("Network error while creating account");
+      setFormError("Connection problem while creating account.");
     } finally {
       setSubmitting(false);
     }
@@ -130,10 +138,31 @@ export function AccountManagementPanel({
 
   async function handleUpdateUser(
     targetId: string,
+    targetEmail: string,
     patch: { role?: UserRole; isActive?: boolean; ownerId?: string | null }
   ) {
     setUpdatingId(targetId);
     setTableError(null);
+    trackAction({
+      module: "accounts",
+      action:
+        patch.role !== undefined
+          ? `Changed account role to ${patch.role}`
+          : patch.isActive !== undefined
+            ? patch.isActive
+              ? "Activated account"
+              : "Deactivated account"
+            : "Updated station assignment",
+      controlLabel:
+        patch.role !== undefined
+          ? "Role Selector"
+          : patch.isActive !== undefined
+            ? patch.isActive
+              ? "Activate Account"
+              : "Deactivate Account"
+            : "Owner Station Selector",
+      targetLabel: targetEmail,
+    });
     try {
       const response = await fetch(`/api/users/${targetId}`, {
         method: "PATCH",
@@ -143,13 +172,13 @@ export function AccountManagementPanel({
       const data = (await response.json()) as { error?: string };
 
       if (!response.ok) {
-        setTableError(data.error ?? "Failed to update account");
+        setTableError(data.error ?? "Unable to update account.");
         return;
       }
 
       await Promise.resolve(onUsersChanged());
     } catch {
-      setTableError("Network error while updating account");
+      setTableError("Connection problem while updating account.");
     } finally {
       setUpdatingId(null);
     }
@@ -163,15 +192,15 @@ export function AccountManagementPanel({
       {/* Create Account Card */}
       <div className="av-card p-6 lg:col-span-5">
         <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F2F2F4] text-[#111111]">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--av-surface-subtle)] text-[var(--av-ink)]">
             <UserPlus className="h-4 w-4" />
           </span>
           <div>
-            <h2 className="text-base font-bold text-[#111111]">
+            <h2 className="text-base font-bold text-[var(--av-ink)]">
               Create Account
             </h2>
-            <p className="text-xs font-normal text-[#71717A]">
-              Provision an active account with an assigned role.
+            <p className="text-xs font-normal text-[var(--av-muted)]">
+              Add a new user account with an assigned role.
             </p>
           </div>
         </div>
@@ -180,7 +209,7 @@ export function AccountManagementPanel({
           <div>
             <label
               htmlFor="account-fullname"
-              className="mb-1.5 block text-xs font-semibold text-[#111111]"
+              className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]"
             >
               Full Name
             </label>
@@ -190,14 +219,14 @@ export function AccountManagementPanel({
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
               placeholder="e.g. Maria Santos"
-              className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-sm text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+              className="av-input w-full rounded-2xl px-4 py-2.5 text-sm"
             />
           </div>
 
           <div>
             <label
               htmlFor="account-email"
-              className="mb-1.5 block text-xs font-semibold text-[#111111]"
+              className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]"
             >
               Email Address
             </label>
@@ -208,7 +237,7 @@ export function AccountManagementPanel({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="owner@aquavitae.ph"
-              className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-sm text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+              className="av-input w-full rounded-2xl px-4 py-2.5 text-sm"
             />
           </div>
 
@@ -216,7 +245,7 @@ export function AccountManagementPanel({
             <div className="mb-1.5 flex items-center justify-between">
               <label
                 htmlFor="account-password"
-                className="text-xs font-semibold text-[#111111]"
+                className="text-xs font-semibold text-[var(--av-ink)]"
               >
                 Temporary Password
               </label>
@@ -225,8 +254,13 @@ export function AccountManagementPanel({
                 onClick={() => {
                   setPassword(generateStrongPassword());
                   setShowPassword(true);
+                  trackAction({
+                    module: "accounts",
+                    action: "Generated temporary password",
+                    controlLabel: "Generate",
+                  });
                 }}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#52525B] underline decoration-[#D4D4D8] underline-offset-2 hover:text-[#111111]"
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--av-muted)] underline decoration-[var(--av-border-strong)] underline-offset-2 hover:text-[var(--av-ink)]"
               >
                 <KeyRound className="h-3 w-3" />
                 Generate
@@ -241,13 +275,13 @@ export function AccountManagementPanel({
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Minimum 6 characters"
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 pr-11 text-sm text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input w-full rounded-2xl px-4 py-2.5 pr-11 text-sm"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword((prev) => !prev)}
                 aria-label={showPassword ? "Hide password" : "Show password"}
-                className="absolute inset-y-0 right-2.5 my-auto flex h-8 w-8 items-center justify-center rounded-full text-[#71717A] hover:bg-[#EFEFF2] hover:text-[#111111]"
+                className="absolute inset-y-0 right-2.5 my-auto flex h-8 w-8 items-center justify-center rounded-full text-[var(--av-muted)] hover:bg-[var(--av-surface-subtle)] hover:text-[var(--av-ink)]"
               >
                 {showPassword ? (
                   <EyeOff className="h-4 w-4" />
@@ -261,7 +295,7 @@ export function AccountManagementPanel({
           <div>
             <label
               htmlFor="account-role"
-              className="mb-1.5 block text-xs font-semibold text-[#111111]"
+              className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]"
             >
               Assigned Role
             </label>
@@ -269,7 +303,7 @@ export function AccountManagementPanel({
               id="account-role"
               value={role}
               onChange={(e) => setRole(e.target.value as UserRole)}
-              className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-sm font-medium text-[#111111] focus:border-[#111111] focus:bg-white focus:outline-none"
+              className="av-input w-full rounded-2xl px-4 py-2.5 text-sm font-medium"
             >
               {ROLE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -277,7 +311,7 @@ export function AccountManagementPanel({
                 </option>
               ))}
             </select>
-            <p className="mt-1.5 text-[11px] text-[#71717A]">
+            <p className="mt-1.5 text-[11px] text-[var(--av-muted)]">
               {ROLE_OPTIONS.find((opt) => opt.value === role)?.hint}
             </p>
           </div>
@@ -286,7 +320,7 @@ export function AccountManagementPanel({
             <div>
               <label
                 htmlFor="account-owner"
-                className="mb-1.5 block text-xs font-semibold text-[#111111]"
+                className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]"
               >
                 Assign to Owner Station
               </label>
@@ -295,7 +329,7 @@ export function AccountManagementPanel({
                 value={resolvedCreateOwnerId}
                 required={role === "cashier" && owners.length > 0}
                 onChange={(e) => setOwnerId(e.target.value)}
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-sm font-medium text-[#111111] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input w-full rounded-2xl px-4 py-2.5 text-sm font-medium"
               >
                 {owners.length === 0 ? (
                   <option value="">No active owners yet</option>
@@ -331,21 +365,21 @@ export function AccountManagementPanel({
           <button
             type="submit"
             disabled={submitting}
-            className="w-full rounded-full bg-[#111111] px-5 py-3 text-sm font-semibold text-white transition hover:bg-black/85 disabled:opacity-50"
+            className="av-btn-primary w-full px-5 py-3 text-sm disabled:opacity-50"
           >
             {submitting ? "Creating..." : "Create Account"}
           </button>
         </form>
       </div>
 
-      {/* Registered Accounts Rounded-Row Table */}
+      {/* Registered Accounts Table */}
       <div className="av-card p-6 lg:col-span-7">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-bold text-[#111111]">
+            <h2 className="text-base font-bold text-[var(--av-ink)]">
               Registered Accounts ({users.length})
             </h2>
-            <p className="text-xs font-normal text-[#71717A]">
+            <p className="text-xs font-normal text-[var(--av-muted)]">
               Manage assigned roles, owner station links, and active status.
             </p>
           </div>
@@ -373,7 +407,7 @@ export function AccountManagementPanel({
           ) : (
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
-                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
+                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                   <th className="w-8 pb-1 pl-3" />
                   <th className="px-3 pb-1">Account</th>
                   <th className="px-3 pb-1">Role</th>
@@ -390,7 +424,7 @@ export function AccountManagementPanel({
                   return (
                     <tr
                       key={user.id}
-                      className="rounded-2xl bg-[#F7F7F9] font-medium transition hover:bg-[#F0F0F3]"
+                      className="rounded-2xl bg-[var(--av-surface-subtle)] font-medium transition hover:bg-[var(--av-surface-hover)]"
                     >
                       <td className="rounded-l-2xl py-3 pl-3">
                         <input
@@ -398,20 +432,20 @@ export function AccountManagementPanel({
                           checked={selectedIds.has(user.id)}
                           onChange={() => toggleRowSelect(user.id)}
                           aria-label={`Select ${user.email}`}
-                          className="h-4 w-4 rounded border-[#D4D4D8] accent-[#111111]"
+                          className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
                         />
                       </td>
 
                       <td className="px-3 py-3">
-                        <div className="font-semibold text-[#111111]">
+                        <div className="font-semibold text-[var(--av-ink)]">
                           {user.full_name || "Unnamed User"}
                           {isSelf && (
-                            <span className="ml-1.5 rounded-full bg-[#111111] px-2 py-0.5 text-[10px] font-semibold text-white">
+                            <span className="ml-1.5 rounded-full bg-[var(--av-accent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--av-accent-ink)]">
                               You
                             </span>
                           )}
                         </div>
-                        <div className="text-[11px] font-normal text-[#71717A]">
+                        <div className="text-[11px] font-normal text-[var(--av-muted)]">
                           {user.email}
                         </div>
                       </td>
@@ -425,11 +459,11 @@ export function AccountManagementPanel({
                             value={user.role}
                             disabled={isBusy}
                             onChange={(e) =>
-                              handleUpdateUser(user.id, {
+                              void handleUpdateUser(user.id, user.email, {
                                 role: e.target.value as UserRole,
                               })
                             }
-                            className="rounded-full border border-[#E4E4E7] bg-white px-3 py-1 text-xs font-semibold capitalize text-[#111111] focus:border-[#111111] focus:outline-none disabled:opacity-40"
+                            className="av-input rounded-full px-3 py-1 text-xs font-semibold capitalize disabled:opacity-40"
                           >
                             {ROLE_OPTIONS.map((opt) => (
                               <option key={opt.value} value={opt.value}>
@@ -447,15 +481,11 @@ export function AccountManagementPanel({
                             value={user.owner_id ?? ""}
                             disabled={isBusy}
                             onChange={(e) =>
-                              handleUpdateUser(user.id, {
+                              void handleUpdateUser(user.id, user.email, {
                                 ownerId: e.target.value || null,
                               })
                             }
-                            className={`rounded-full border px-3 py-1 text-xs font-semibold focus:border-[#111111] focus:outline-none disabled:opacity-40 ${
-                              !user.owner_id
-                                ? "border-[#111111] bg-white text-[#111111]"
-                                : "border-[#E4E4E7] bg-white text-[#52525B]"
-                            }`}
+                            className="av-input rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-40"
                           >
                             <option value="">Unassigned</option>
                             {owners.map((owner) => (
@@ -465,21 +495,21 @@ export function AccountManagementPanel({
                             ))}
                           </select>
                         ) : (
-                          <span className="text-[#A1A1AA]">—</span>
+                          <span className="text-[var(--av-muted)]">—</span>
                         )}
                       </td>
 
                       <td className="px-3 py-3">
                         <StatusChip
                           label={user.is_active ? "Active" : "Inactive"}
-                          tone={user.is_active ? "soft" : "outline"}
+                          tone={user.is_active ? "green" : "outline"}
                           dot
                         />
                       </td>
 
                       <td className="rounded-r-2xl py-3 pr-3 text-right">
                         {isSelf ? (
-                          <span className="text-[11px] text-[#A1A1AA]">
+                          <span className="text-[11px] text-[var(--av-muted)]">
                             Protected
                           </span>
                         ) : (
@@ -492,7 +522,7 @@ export function AccountManagementPanel({
                                   : "Activate Account",
                                 disabled: isBusy,
                                 onClick: () =>
-                                  void handleUpdateUser(user.id, {
+                                  void handleUpdateUser(user.id, user.email, {
                                     isActive: !user.is_active,
                                   }),
                               },

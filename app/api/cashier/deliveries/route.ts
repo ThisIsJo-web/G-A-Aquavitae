@@ -4,7 +4,12 @@ import type {
   DeliveryPaymentMethod,
   DeliveryPaymentStatus,
 } from "@/backend/db/types";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import { requireCashierAccess } from "@/backend/services/auth-guards";
 import {
   createDelivery,
@@ -13,8 +18,10 @@ import {
 
 export async function GET(request: Request) {
   try {
-    const { tenantOwnerId } = await requireCashierAccess();
     const { searchParams } = new URL(request.url);
+    const { tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const date = searchParams.get("date") ?? undefined;
     const overview = await getDeliveriesOverview(tenantOwnerId, date);
 
@@ -47,7 +54,10 @@ interface CreateDeliveryBody {
 
 export async function POST(request: Request) {
   try {
-    const { profile, tenantOwnerId } = await requireCashierAccess();
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const body = await parseJsonBody<CreateDeliveryBody>(request);
 
     if (
@@ -58,7 +68,7 @@ export async function POST(request: Request) {
       !body.destination.trim()
     ) {
       return NextResponse.json(
-        { error: "Customer name and area/place are required" },
+        { error: "Customer name and area/address are required" },
         { status: 400 }
       );
     }
@@ -104,6 +114,25 @@ export async function POST(request: Request) {
       saveAsRegularCustomer: Boolean(body.saveAsRegularCustomer),
       businessDate:
         typeof body.businessDate === "string" ? body.businessDate : undefined,
+    });
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "deliveries",
+      action: `Recorded Delivery (${delivery.quantity} gal · ₱${Number(delivery.total_amount).toFixed(2)})`,
+      controlLabel: "Save Delivery",
+      targetType: "delivery",
+      targetId: delivery.id,
+      targetLabel: `${delivery.customer_name} · ${delivery.destination}`,
+      route: "/api/cashier/deliveries",
+      ...meta,
     });
 
     return NextResponse.json(

@@ -1,8 +1,9 @@
 "use client";
 
 import { Droplets, Eye, EyeOff } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { ThemeToggleButton } from "@/app/_components/theme-provider";
 
 interface AuthenticatedUser {
   id: string;
@@ -13,10 +14,7 @@ interface AuthenticatedUser {
 
 export function LoginForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const prefilledEmail = searchParams.get("email") ?? "";
-  const switchMode = searchParams.get("mode");
-  const [email, setEmail] = useState(prefilledEmail);
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,7 +65,7 @@ export function LoginForm() {
 
       setUser(data.user);
     } catch {
-      setError("Network error. Please try again.");
+      setError("Connection error. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -89,23 +87,28 @@ export function LoginForm() {
 
   if (user) {
     return (
-      <div className="w-full max-w-md rounded-[28px] border border-[#E8E8EC] bg-white p-8 shadow-[0_12px_40px_rgba(0,0,0,0.05)]">
-        <div className="flex items-center gap-3">
-          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[#111111] text-white">
-            <Droplets className="h-5 w-5" />
-          </span>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-[#111111]">
-              Signed in
-            </h1>
-            <p className="text-xs font-normal text-[#71717A]">{user.email}</p>
+      <div className="av-card w-full max-w-md p-8">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--av-accent)] text-[var(--av-accent-ink)]">
+              <Droplets className="h-5 w-5" />
+            </span>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-[var(--av-ink)]">
+                Signed in
+              </h1>
+              <p className="text-xs font-normal text-[var(--av-muted)]">
+                {user.email}
+              </p>
+            </div>
           </div>
+          <ThemeToggleButton compact />
         </div>
 
         {user.role && (
-          <div className="mt-5 flex items-center justify-between rounded-2xl bg-[#F7F7F9] px-4 py-3 text-xs">
-            <span className="font-semibold text-[#71717A]">Role</span>
-            <span className="rounded-full bg-[#111111] px-3 py-1 font-semibold capitalize text-white">
+          <div className="mt-5 flex items-center justify-between rounded-2xl bg-[var(--av-surface-subtle)] px-4 py-3 text-xs">
+            <span className="font-semibold text-[var(--av-muted)]">Role</span>
+            <span className="rounded-full bg-[var(--av-accent)] px-3 py-1 font-semibold capitalize text-[var(--av-accent-ink)]">
               {user.role}
             </span>
           </div>
@@ -115,7 +118,7 @@ export function LoginForm() {
           type="button"
           onClick={handleSignOut}
           disabled={loading}
-          className="mt-6 w-full rounded-full border border-[#D4D4D8] bg-white px-5 py-3 text-sm font-semibold text-[#111111] transition hover:bg-[#F4F4F6] disabled:cursor-not-allowed disabled:opacity-50"
+          className="av-btn-outline mt-6 w-full rounded-full px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
         >
           {loading ? "Signing out..." : "Sign out"}
         </button>
@@ -124,41 +127,31 @@ export function LoginForm() {
   }
 
   return (
-    <div className="w-full max-w-md rounded-[28px] border border-[#E8E8EC] bg-white p-8 shadow-[0_12px_40px_rgba(0,0,0,0.05)]">
-      <div className="mb-8 flex items-center gap-3.5">
-        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[#111111] text-white">
-          <Droplets className="h-6 w-6" strokeWidth={2} />
-        </span>
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-[#111111]">
-            G &amp; A Aqua Vitae
-          </h1>
-          <p className="text-sm font-normal text-[#71717A]">
-            Sign in to your station account
-          </p>
+    <div className="av-card w-full max-w-md overflow-hidden p-0">
+      <div aria-hidden="true" className="av-top-accent" />
+      <div className="p-8">
+      <div className="mb-8 flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3.5">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[var(--av-blue-soft)] text-[var(--av-blue-ink)] ring-1 ring-[var(--av-blue-border)]">
+            <Droplets className="h-6 w-6" strokeWidth={2} />
+          </span>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-[var(--av-ink)]">
+              G &amp; A Aqua Vitae
+            </h1>
+            <p className="text-sm font-normal text-[var(--av-muted)]">
+              Sign in to your station account
+            </p>
+          </div>
         </div>
+        <ThemeToggleButton compact />
       </div>
-
-      {switchMode === "owner-cashier" && (
-        <div className="mb-5 rounded-2xl border border-[#E4E4E7] bg-[#F7F7F9] px-4 py-3 text-xs text-[#111111]">
-          <span className="font-semibold">Cashier Account Switch:</span> Enter
-          the password for your marked &ldquo;My Account&rdquo; Cashier login to
-          open the Cashier Dashboard.
-        </div>
-      )}
-
-      {switchMode === "return-owner" && (
-        <div className="mb-5 rounded-2xl border border-[#E4E4E7] bg-[#F7F7F9] px-4 py-3 text-xs text-[#111111]">
-          <span className="font-semibold">Owner Login:</span> Sign in with your
-          Station Owner credentials to open the Owner Dashboard.
-        </div>
-      )}
 
       <form onSubmit={handleSubmit} className="space-y-5">
         <div>
           <label
             htmlFor="email"
-            className="mb-2 block text-xs font-semibold text-[#111111]"
+            className="mb-2 block text-xs font-semibold text-[var(--av-ink)]"
           >
             Email Address
           </label>
@@ -171,14 +164,14 @@ export function LoginForm() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="name@aquavitae.ph"
-            className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-3 text-sm font-normal text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+            className="av-input w-full rounded-2xl px-4 py-3 text-sm font-normal"
           />
         </div>
 
         <div>
           <label
             htmlFor="password"
-            className="mb-2 block text-xs font-semibold text-[#111111]"
+            className="mb-2 block text-xs font-semibold text-[var(--av-ink)]"
           >
             Password
           </label>
@@ -192,13 +185,13 @@ export function LoginForm() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter your password"
-              className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-3 pr-12 text-sm font-normal text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+              className="av-input w-full rounded-2xl px-4 py-3 pr-12 text-sm font-normal"
             />
             <button
               type="button"
               onClick={() => setShowPassword((prev) => !prev)}
               aria-label={showPassword ? "Hide password" : "Show password"}
-              className="absolute inset-y-0 right-3 my-auto flex h-8 w-8 items-center justify-center rounded-full text-[#71717A] transition hover:bg-[#EFEFF2] hover:text-[#111111]"
+              className="absolute inset-y-0 right-3 my-auto flex h-8 w-8 items-center justify-center rounded-full text-[var(--av-muted)] transition hover:bg-[var(--av-surface-hover)] hover:text-[var(--av-ink)]"
             >
               {showPassword ? (
                 <EyeOff className="h-4 w-4" />
@@ -212,7 +205,7 @@ export function LoginForm() {
         {error && (
           <p
             role="alert"
-            className="rounded-2xl bg-[#111111] px-4 py-3 text-xs font-medium text-white"
+            className="rounded-2xl bg-[var(--av-accent)] px-4 py-3 text-xs font-medium text-[var(--av-accent-ink)]"
           >
             {error}
           </p>
@@ -221,11 +214,12 @@ export function LoginForm() {
         <button
           type="submit"
           disabled={loading}
-          className="w-full rounded-full bg-[#111111] px-5 py-3.5 text-sm font-semibold text-white transition hover:bg-black/85 disabled:cursor-not-allowed disabled:opacity-50"
+          className="av-btn-primary w-full rounded-full px-5 py-3.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
         >
           {loading ? "Signing in..." : "Sign in"}
         </button>
       </form>
+      </div>
     </div>
   );
 }

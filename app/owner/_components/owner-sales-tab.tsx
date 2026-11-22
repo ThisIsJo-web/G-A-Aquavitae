@@ -1,9 +1,11 @@
 "use client";
 
-import { Download, FileSpreadsheet, Search } from "lucide-react";
+import { Download, FileSpreadsheet, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { trackAction } from "@/app/_components/activity-tracker";
 import {
   EmptyState,
+  NoticeBanner,
   RowActionMenu,
   StatusChip,
 } from "@/app/_components/ui/monochrome-controls";
@@ -17,8 +19,11 @@ export type OwnerSalesSubView = "sales" | "shifts";
 
 interface OwnerSalesTabProps {
   snapshot: OwnerDashboardSnapshot;
+  stationQuery: string;
+  stationAmpParam: string;
   subView: OwnerSalesSubView;
   onSubViewChange: (view: OwnerSalesSubView) => void;
+  onDataChanged: () => Promise<void>;
 }
 
 type ChannelFilter = "all" | "walkin" | "delivery" | "vendo";
@@ -32,9 +37,9 @@ function channelLabel(channel: OwnerUnifiedSaleRow["channel"]): string {
 
 function statusChipProps(status: OwnerUnifiedSaleRow["status"]): {
   label: string;
-  tone: "solid" | "soft" | "outline";
+  tone: "solid" | "soft" | "outline" | "green";
 } {
-  if (status === "paid") return { label: "Paid", tone: "soft" };
+  if (status === "paid") return { label: "Paid", tone: "green" };
   if (status === "utang") return { label: "Utang", tone: "solid" };
   if (status === "unpaid") return { label: "Unpaid", tone: "solid" };
   return { label: "Voided", tone: "outline" };
@@ -42,19 +47,29 @@ function statusChipProps(status: OwnerUnifiedSaleRow["status"]): {
 
 export function OwnerSalesTab({
   snapshot,
+  stationQuery,
+  stationAmpParam,
   subView,
   onSubViewChange,
+  onDataChanged,
 }: OwnerSalesTabProps) {
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [feedback, setFeedback] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const filteredSales = useMemo(() => {
     const q = query.trim().toLowerCase();
     return snapshot.salesRows.filter((row) => {
-      if (channelFilter !== "all" && row.channel !== channelFilter) return false;
+      if (channelFilter !== "all" && row.channel !== channelFilter)
+        return false;
       if (statusFilter !== "all" && row.status !== statusFilter) return false;
       if (q) {
         const hay =
@@ -74,17 +89,77 @@ export function OwnerSalesTab({
     [filteredSales]
   );
 
+  // Only count IDs that still exist in the current snapshot
+  const activeSelectedRows = useMemo(
+    () => snapshot.salesRows.filter((row) => selectedIds.includes(row.id)),
+    [snapshot.salesRows, selectedIds]
+  );
+
   function toggleRow(id: string) {
+    setConfirmingDelete(false);
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
   }
 
   function toggleAllVisible() {
+    setConfirmingDelete(false);
     const visibleIds = filteredSales.map((r) => r.id);
     const allChecked =
-      visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
+      visibleIds.length > 0 &&
+      visibleIds.every((id) => selectedIds.includes(id));
     setSelectedIds(allChecked ? [] : visibleIds);
+  }
+
+  async function handleConfirmBulkDelete() {
+    if (activeSelectedRows.length === 0) return;
+    setDeleting(true);
+    setFeedback(null);
+    trackAction({
+      module: "pos",
+      action: `Confirmed deletion of ${activeSelectedRows.length} sales record(s)`,
+      controlLabel: "Confirm Delete",
+    });
+    try {
+      const response = await fetch(`/api/owner/sales${stationQuery}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: activeSelectedRows.map((row) => ({
+            id: row.id,
+            channel: row.channel,
+          })),
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        deletedCount?: number;
+        error?: string;
+      };
+      if (!response.ok) {
+        setFeedback({
+          tone: "error",
+          message: payload.error ?? "Unable to delete selected sales records.",
+        });
+        return;
+      }
+
+      const count = payload.deletedCount ?? activeSelectedRows.length;
+      setSelectedIds([]);
+      setConfirmingDelete(false);
+      setFeedback({
+        tone: "success",
+        message: `Deleted ${count} selected sales ${count === 1 ? "record" : "records"}.`,
+      });
+      await onDataChanged();
+    } catch {
+      setFeedback({
+        tone: "error",
+        message: "Connection error while deleting selected sales.",
+      });
+    } finally {
+      setDeleting(false);
+    }
   }
 
   function handleCopyDetails(row: OwnerUnifiedSaleRow) {
@@ -94,57 +169,62 @@ export function OwnerSalesTab({
     window.setTimeout(() => setCopiedId(null), 1800);
   }
 
-  const exportBase = `/api/owner/export?range=${snapshot.rangeDays}`;
+  const exportBase = `/api/owner/export?range=${snapshot.rangeDays}${stationAmpParam}`;
 
   return (
     <div className="space-y-6">
-      {/* Top Controls Card */}
+      {feedback && (
+        <NoticeBanner
+          tone={feedback.tone}
+          message={feedback.message}
+          onDismiss={() => setFeedback(null)}
+        />
+      )}
+
       <div className="av-card p-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          {/* Sub-view Switcher */}
-          <div className="inline-flex rounded-full bg-[#F2F2F4] p-1">
+          <div className="inline-flex rounded-full bg-[var(--av-surface-subtle)] p-1">
             <button
               type="button"
               onClick={() => onSubViewChange("sales")}
               className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
                 subView === "sales"
-                  ? "bg-[#111111] text-white"
-                  : "text-[#52525B] hover:text-[#111111]"
+                  ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                  : "text-[var(--av-muted)] hover:text-[var(--av-ink)]"
               }`}
             >
-              Sales Ledger ({snapshot.salesRows.length})
+              Sales Records ({snapshot.salesRows.length})
             </button>
             <button
               type="button"
               onClick={() => onSubViewChange("shifts")}
               className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
                 subView === "shifts"
-                  ? "bg-[#111111] text-white"
-                  : "text-[#52525B] hover:text-[#111111]"
+                  ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                  : "text-[var(--av-muted)] hover:text-[var(--av-ink)]"
               }`}
             >
               Closed Shifts ({snapshot.shiftClosings.length})
             </button>
           </div>
 
-          {/* Export Buttons */}
           <div className="flex flex-wrap items-center gap-2">
             <a
               href={`${exportBase}&format=csv`}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold text-white transition hover:bg-black/85"
+              className="av-btn-primary inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition"
             >
               <Download className="h-3.5 w-3.5" />
               Export CSV
             </a>
             <a
               href={`${exportBase}&format=txt`}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[#D4D4D8] bg-white px-4 py-2 text-xs font-semibold text-[#111111] transition hover:bg-[#F4F4F6]"
+              className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition"
             >
               Export TXT
             </a>
             <a
               href={`${exportBase}&format=json`}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[#D4D4D8] bg-white px-4 py-2 text-xs font-semibold text-[#111111] transition hover:bg-[#F4F4F6]"
+              className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition"
             >
               JSON
             </a>
@@ -152,15 +232,15 @@ export function OwnerSalesTab({
         </div>
 
         {subView === "sales" && (
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[#ECECEF] pt-5">
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--av-border)] pt-5">
             <div className="relative min-w-[220px] flex-1 max-w-md">
-              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#A1A1AA]" />
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--av-subtle)]" />
               <input
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search customer, receipt, area, or date..."
-                className="w-full rounded-full border border-[#E4E4E7] bg-[#F8F8FA] py-2 pl-10 pr-4 text-xs font-medium text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input w-full rounded-full py-2 pl-10 pr-4 text-xs font-medium"
               />
             </div>
 
@@ -172,8 +252,8 @@ export function OwnerSalesTab({
                   onClick={() => setChannelFilter(ch)}
                   className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
                     channelFilter === ch
-                      ? "bg-[#111111] text-white"
-                      : "border border-[#E4E4E7] bg-white text-[#52525B] hover:bg-[#F4F4F6]"
+                      ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                      : "border border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink-secondary)] hover:bg-[var(--av-surface-subtle)]"
                   }`}
                 >
                   {ch === "all"
@@ -188,9 +268,11 @@ export function OwnerSalesTab({
 
               <select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+                onChange={(e) =>
+                  setStatusFilter(e.target.value as StatusFilter)
+                }
                 aria-label="Filter by payment status"
-                className="rounded-full border border-[#E4E4E7] bg-white px-3.5 py-1.5 text-xs font-semibold text-[#111111] focus:border-[#111111] focus:outline-none"
+                className="av-input rounded-full bg-[var(--av-surface)] px-3.5 py-1.5 text-xs font-semibold"
               >
                 <option value="all">All Statuses</option>
                 <option value="paid">Paid</option>
@@ -203,25 +285,65 @@ export function OwnerSalesTab({
         )}
       </div>
 
-      {/* Table Section */}
       {subView === "sales" ? (
         <div className="av-card p-6">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-bold tracking-tight text-[#111111]">
-                Unified Sales ({filteredSales.length})
+              <h2 className="text-base font-bold tracking-tight text-[var(--av-ink)]">
+                All Sales ({filteredSales.length})
               </h2>
-              <p className="text-xs text-[#71717A]">
+              <p className="text-xs text-[var(--av-muted)]">
                 Filtered active total:{" "}
-                <span className="font-semibold tabular-nums text-[#111111]">
+                <span className="font-semibold tabular-nums text-[var(--av-ink)]">
                   {formatPHP(filteredTotal)}
                 </span>
-                {selectedIds.length > 0 && (
-                  <> · {selectedIds.length} selected</>
+                {activeSelectedRows.length > 0 && (
+                  <> · {activeSelectedRows.length} selected</>
                 )}
               </p>
             </div>
-            {copiedId && <StatusChip label="Copied to clipboard" tone="solid" />}
+
+            <div className="flex flex-wrap items-center gap-2">
+              {copiedId && <StatusChip label="Copied to clipboard" tone="solid" />}
+
+              {activeSelectedRows.length > 0 &&
+                (!confirmingDelete ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(true)}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-red-500/40 bg-red-500/12 px-3.5 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-500/20 dark:text-red-300"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete Selected ({activeSelectedRows.length})
+                  </button>
+                ) : (
+                  <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-red-500/40 bg-red-500/10 py-1 pr-1 pl-3">
+                    <span className="text-xs font-semibold text-red-700 dark:text-red-300">
+                      Delete {activeSelectedRows.length}{" "}
+                      {activeSelectedRows.length === 1 ? "record" : "records"}?
+                    </span>
+                    <button
+                      type="button"
+                      disabled={deleting}
+                      onClick={() => setConfirmingDelete(false)}
+                      className="rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3 py-1 text-xs font-semibold text-[var(--av-ink)] transition hover:bg-[var(--av-surface-subtle)] disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={deleting}
+                      onClick={() => void handleConfirmBulkDelete()}
+                      className="inline-flex items-center gap-1 rounded-full bg-red-600 px-3.5 py-1 text-xs font-semibold text-white transition hover:bg-red-700 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      {deleting
+                        ? "Deleting..."
+                        : `Confirm Delete (${activeSelectedRows.length})`}
+                    </button>
+                  </div>
+                ))}
+            </div>
           </div>
 
           {filteredSales.length === 0 ? (
@@ -234,7 +356,7 @@ export function OwnerSalesTab({
             <div className="overflow-x-auto">
               <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
                 <thead>
-                  <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
+                  <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                     <th className="w-10 px-3 py-2">
                       <input
                         type="checkbox"
@@ -244,7 +366,7 @@ export function OwnerSalesTab({
                           filteredSales.every((r) => selectedIds.includes(r.id))
                         }
                         onChange={toggleAllVisible}
-                        className="h-4 w-4 rounded border-[#D4D4D8] accent-[#111111]"
+                        className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
                       />
                     </th>
                     <th className="px-3 py-2">Date</th>
@@ -265,7 +387,7 @@ export function OwnerSalesTab({
                     return (
                       <tr
                         key={row.id}
-                        className="bg-[#F8F8FA] font-medium text-[#111111] transition hover:bg-[#EFEFF2]"
+                        className="bg-[var(--av-surface-subtle)] font-medium text-[var(--av-ink)] transition hover:bg-[var(--av-surface-hover)]"
                       >
                         <td className="rounded-l-2xl px-3 py-3.5">
                           <input
@@ -273,10 +395,10 @@ export function OwnerSalesTab({
                             aria-label={`Select ${row.reference}`}
                             checked={checked}
                             onChange={() => toggleRow(row.id)}
-                            className="h-4 w-4 rounded border-[#D4D4D8] accent-[#111111]"
+                            className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
                           />
                         </td>
-                        <td className="whitespace-nowrap px-3 py-3.5 tabular-nums text-[#52525B]">
+                        <td className="whitespace-nowrap px-3 py-3.5 tabular-nums text-[var(--av-ink-secondary)]">
                           {row.businessDate}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3.5">
@@ -286,17 +408,17 @@ export function OwnerSalesTab({
                           />
                         </td>
                         <td className="px-3 py-3.5">
-                          <div className="font-semibold text-[#111111]">
+                          <div className="font-semibold text-[var(--av-ink)]">
                             {row.customerLabel}
                           </div>
-                          <div className="text-[11px] font-normal text-[#71717A]">
+                          <div className="text-[11px] font-normal text-[var(--av-muted)]">
                             {row.reference}
                           </div>
                         </td>
                         <td className="whitespace-nowrap px-3 py-3.5 text-right tabular-nums">
                           {row.gallons > 0 ? row.gallons : "—"}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-3.5 text-[#52525B]">
+                        <td className="whitespace-nowrap px-3 py-3.5 text-[var(--av-ink-secondary)]">
                           {row.paymentMethod}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3.5">
@@ -312,6 +434,13 @@ export function OwnerSalesTab({
                                 label: "Copy Receipt Summary",
                                 onClick: () => handleCopyDetails(row),
                               },
+                              {
+                                label: "Select for Deletion",
+                                onClick: () => {
+                                  setSelectedIds([row.id]);
+                                  setConfirmingDelete(true);
+                                },
+                              },
                             ]}
                           />
                         </td>
@@ -326,11 +455,11 @@ export function OwnerSalesTab({
       ) : (
         <div className="av-card p-6">
           <div className="mb-4">
-            <h2 className="text-base font-bold tracking-tight text-[#111111]">
+            <h2 className="text-base font-bold tracking-tight text-[var(--av-ink)]">
               Closed Shift Tallies ({snapshot.shiftClosings.length})
             </h2>
-            <p className="text-xs text-[#71717A]">
-              Cashier shift closing history with automatic Over / Short verification
+            <p className="text-xs text-[var(--av-muted)]">
+              Shift closing history with automatic Over / Short check
             </p>
           </div>
 
@@ -338,19 +467,19 @@ export function OwnerSalesTab({
             <EmptyState
               icon={<FileSpreadsheet className="h-5 w-5" />}
               title="No closed shifts recorded yet"
-              description="Once a cashier closes a shift at the end of the day, the verified tally appears here."
+              description="Once a shift is closed at the end of the day, the tally appears here."
             />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
                 <thead>
-                  <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
-                    <th className="px-4 py-2">Business Date</th>
+                  <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
+                    <th className="px-4 py-2">Date</th>
                     <th className="px-4 py-2">Shift</th>
                     <th className="px-4 py-2 text-right">Gross Sales</th>
                     <th className="px-4 py-2 text-right">Expected Cash</th>
                     <th className="px-4 py-2 text-right">Actual Cash</th>
-                    <th className="px-4 py-2">Variance</th>
+                    <th className="px-4 py-2">Cash Check</th>
                     <th className="px-4 py-2">Orders</th>
                   </tr>
                 </thead>
@@ -366,15 +495,15 @@ export function OwnerSalesTab({
                     return (
                       <tr
                         key={shift.id}
-                        className="bg-[#F8F8FA] font-medium text-[#111111] transition hover:bg-[#EFEFF2]"
+                        className="bg-[var(--av-surface-subtle)] font-medium text-[var(--av-ink)] transition hover:bg-[var(--av-surface-hover)]"
                       >
                         <td className="rounded-l-2xl px-4 py-3.5 font-semibold tabular-nums">
                           {shift.businessDate}
                         </td>
-                        <td className="px-4 py-3.5 text-[#52525B]">
+                        <td className="px-4 py-3.5 text-[var(--av-ink-secondary)]">
                           <div>{shift.shiftLabel}</div>
                           {shift.notes && (
-                            <div className="text-[11px] text-[#71717A]">
+                            <div className="text-[11px] text-[var(--av-muted)]">
                               {shift.notes}
                             </div>
                           )}
@@ -382,19 +511,25 @@ export function OwnerSalesTab({
                         <td className="px-4 py-3.5 text-right font-bold tabular-nums">
                           {formatPHP(shift.totalGrossSales)}
                         </td>
-                        <td className="px-4 py-3.5 text-right tabular-nums text-[#52525B]">
+                        <td className="px-4 py-3.5 text-right tabular-nums text-[var(--av-ink-secondary)]">
                           {formatPHP(shift.expectedCash)}
                         </td>
-                        <td className="px-4 py-3.5 text-right tabular-nums text-[#111111]">
+                        <td className="px-4 py-3.5 text-right tabular-nums text-[var(--av-ink)]">
                           {formatPHP(shift.actualCash)}
                         </td>
                         <td className="px-4 py-3.5">
                           <StatusChip
                             label={varianceLabel}
-                            tone={shift.variance < 0 ? "solid" : "soft"}
+                            tone={
+                              shift.variance === 0
+                                ? "green"
+                                : shift.variance < 0
+                                  ? "red"
+                                  : "yellow"
+                            }
                           />
                         </td>
-                        <td className="rounded-r-2xl px-4 py-3.5 text-[#52525B] tabular-nums">
+                        <td className="rounded-r-2xl px-4 py-3.5 text-[var(--av-ink-secondary)] tabular-nums">
                           {shift.walkinCount} walk-in · {shift.deliveryCount} del
                         </td>
                       </tr>

@@ -13,6 +13,7 @@ import {
 } from "@/backend/services/audit-ledger";
 import {
   adjustGallonStock,
+  assertOperationalDateAllowed,
   ensureStationDefaults,
   isMissingCashierSchemaError,
   roundMoney,
@@ -215,7 +216,7 @@ export async function createWalkInSale(
     throw new AuthServiceError("Add at least one item to complete a sale", 400);
   }
 
-  const businessDate = sanitizeBusinessDate(input.businessDate);
+  const businessDate = assertOperationalDateAllowed(input.businessDate, 7, "Sale date");
   const admin = createSupabaseAdminClient();
 
   const productIds = Array.from(new Set(input.items.map((i) => i.productId)));
@@ -234,7 +235,6 @@ export async function createWalkInSale(
     product_id: string;
     product_name: string;
     category: PosProductRow["category"];
-    gallon_type: null;
     quantity: number;
     unit_price: number;
     line_total: number;
@@ -259,7 +259,6 @@ export async function createWalkInSale(
       product_id: product.id,
       product_name: product.name,
       category: product.category,
-      gallon_type: null,
       quantity: qty,
       unit_price: unitPrice,
       line_total: lineTotal,
@@ -343,7 +342,6 @@ export async function createWalkInSale(
       await adjustGallonStock({
         ownerId,
         cashierId,
-        gallonType: "slim",
         movementType: "walkin_out",
         quantityDelta: -item.quantity,
         businessDate,

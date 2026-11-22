@@ -13,14 +13,14 @@ import {
   type CorrectionRequestsOverview,
 } from "@/backend/services/corrections";
 import {
+  assertOperationalDateAllowed,
   getTodayBusinessDate,
   isMissingCashierSchemaError,
   roundMoney,
-  sanitizeBusinessDate,
   toNumber,
 } from "@/backend/services/cashier/shared";
 
-export type OwnerRangeDays = 7 | 30;
+export type OwnerRangeDays = 7 | 30 | 365;
 export type StationExpenseRow =
   Database["public"]["Tables"]["station_expenses"]["Row"];
 
@@ -51,7 +51,40 @@ export function isValidExpenseCategory(
 }
 
 export function sanitizeRangeDays(value?: string | null): OwnerRangeDays {
-  return value === "30" ? 30 : 7;
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "365" || normalized === "annual" || normalized === "annually" || normalized === "yearly" || normalized === "year") {
+    return 365;
+  }
+  if (normalized === "30" || normalized === "monthly" || normalized === "month") {
+    return 30;
+  }
+  return 7;
+}
+
+export function getOwnerRangeMeta(rangeDays: OwnerRangeDays): {
+  label: string;
+  shortLabel: string;
+  description: string;
+} {
+  if (rangeDays === 365) {
+    return {
+      label: "Annually",
+      shortLabel: "12 Months",
+      description: "the last 12 months",
+    };
+  }
+  if (rangeDays === 30) {
+    return {
+      label: "Monthly",
+      shortLabel: "30 Days",
+      description: "the last 30 days",
+    };
+  }
+  return {
+    label: "Weekly",
+    shortLabel: "7 Days",
+    description: "the last 7 days",
+  };
 }
 
 function isMissingExpensesTableError(
@@ -84,8 +117,57 @@ function formatShortDate(isoDate: string): string {
   }).format(dt);
 }
 
+function formatFullDate(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(dt);
+}
+
+function buildLast12Months(endDate: string): {
+  key: string;
+  shortLabel: string;
+  fullLabel: string;
+  startIso: string;
+}[] {
+  const [endYear, endMonth] = endDate.split("-").map(Number);
+  const months: {
+    key: string;
+    shortLabel: string;
+    fullLabel: string;
+    startIso: string;
+  }[] = [];
+
+  for (let offset = 11; offset >= 0; offset -= 1) {
+    const dt = new Date(Date.UTC(endYear, endMonth - 1 - offset, 1));
+    const yy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+    const shortMonth = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      timeZone: "UTC",
+    }).format(dt);
+    const fullMonth = new Intl.DateTimeFormat("en-US", {
+      month: "long",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(dt);
+    months.push({
+      key: `${yy}-${mm}`,
+      shortLabel: shortMonth,
+      fullLabel: fullMonth,
+      startIso: `${yy}-${mm}-01`,
+    });
+  }
+  return months;
+}
+
 export interface OwnerChartPoint {
   label: string;
+  tooltipLabel?: string;
   primary: number;
   secondary: number;
 }
@@ -96,7 +178,7 @@ export interface OwnerPendingItem {
   title: string;
   detail: string;
   metric: string;
-  targetTab: "supervision" | "customers" | "sales" | "overview";
+  targetTab: "supervision" | "customers" | "inventory" | "sales" | "overview";
   targetSubView?: string;
 }
 
@@ -222,8 +304,42 @@ export async function getOwnerDashboardSnapshot(
   rangeDays: OwnerRangeDays = 7
 ): Promise<OwnerDashboardSnapshot> {
   const endDate = getTodayBusinessDate();
-  const startDate = addDays(endDate, -(rangeDays - 1));
+  const annualMonths = rangeDays === 365 ? buildLast12Months(endDate) : [];
+  const startDate =
+    rangeDays === 365
+      ? annualMonths[0].startIso
+      : addDays(endDate, -(rangeDays - 1));
   const admin = createSupabaseAdminClient();
+
+  // Paginated fetch helper so Annual (12-month) analytics stay 100% accurate
+  // even when a busy station exceeds PostgREST's 1,000-row default page cap.
+  async function fetchAllRows<T>(
+    buildPage: (from: number, to: number) => PromiseLike<{
+      data: T[] | null;
+      error: { code?: string; message?: string } | null;
+    }>
+  ): Promise<{
+    data: T[];
+    error: { code?: string; message?: string } | null;
+  }> {
+    const pageSize = 1000;
+    const maxPages = rangeDays === 365 ? 10 : 3;
+    const collected: T[] = [];
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      const res = await buildPage(from, to);
+      if (res.error) {
+        return { data: [], error: res.error };
+      }
+      const batch = res.data ?? [];
+      collected.push(...batch);
+      if (batch.length < pageSize) break;
+    }
+
+    return { data: collected, error: null };
+  }
 
   const [
     posSalesRes,
@@ -239,13 +355,18 @@ export async function getOwnerDashboardSnapshot(
     stockLogsRes,
     correctionsOverview,
   ] = await Promise.all([
-    admin
-      .from("pos_sales")
-      .select("*")
-      .eq("owner_id", ownerId)
-      .gte("business_date", startDate)
-      .lte("business_date", endDate)
-      .order("created_at", { ascending: false }),
+    fetchAllRows((from, to) =>
+      admin
+        .from("pos_sales")
+        .select(
+          "id, receipt_no, customer_name, payment_method, total_amount, status, business_date, created_at, pos_sale_items(quantity)"
+        )
+        .eq("owner_id", ownerId)
+        .gte("business_date", startDate)
+        .lte("business_date", endDate)
+        .order("created_at", { ascending: false })
+        .range(from, to)
+    ),
     admin
       .from("pos_sales")
       .select("id, receipt_no, customer_name, total_amount, business_date, created_at")
@@ -254,13 +375,16 @@ export async function getOwnerDashboardSnapshot(
       .eq("payment_method", "utang")
       .order("created_at", { ascending: false })
       .limit(100),
-    admin
-      .from("deliveries")
-      .select("*")
-      .eq("owner_id", ownerId)
-      .gte("business_date", startDate)
-      .lte("business_date", endDate)
-      .order("created_at", { ascending: false }),
+    fetchAllRows((from, to) =>
+      admin
+        .from("deliveries")
+        .select("*")
+        .eq("owner_id", ownerId)
+        .gte("business_date", startDate)
+        .lte("business_date", endDate)
+        .order("created_at", { ascending: false })
+        .range(from, to)
+    ),
     admin
       .from("deliveries")
       .select(
@@ -271,28 +395,36 @@ export async function getOwnerDashboardSnapshot(
       .neq("delivery_status", "cancelled")
       .order("business_date", { ascending: false })
       .limit(150),
-    admin
-      .from("vendo_collections")
-      .select("*")
-      .eq("owner_id", ownerId)
-      .gte("business_date", startDate)
-      .lte("business_date", endDate)
-      .order("created_at", { ascending: false }),
-    admin
-      .from("station_expenses")
-      .select("*")
-      .eq("owner_id", ownerId)
-      .gte("expense_date", startDate)
-      .lte("expense_date", endDate)
-      .order("expense_date", { ascending: false })
-      .order("created_at", { ascending: false }),
+    fetchAllRows((from, to) =>
+      admin
+        .from("vendo_collections")
+        .select("*")
+        .eq("owner_id", ownerId)
+        .gte("business_date", startDate)
+        .lte("business_date", endDate)
+        .order("created_at", { ascending: false })
+        .range(from, to)
+    ),
+    fetchAllRows((from, to) =>
+      admin
+        .from("station_expenses")
+        .select("*")
+        .eq("owner_id", ownerId)
+        .gte("expense_date", startDate)
+        .lte("expense_date", endDate)
+        .order("expense_date", { ascending: false })
+        .order("created_at", { ascending: false })
+        .range(from, to)
+    ),
     admin
       .from("shift_closings")
       .select("*")
       .eq("owner_id", ownerId)
+      .gte("business_date", startDate)
+      .lte("business_date", endDate)
       .order("business_date", { ascending: false })
       .order("closed_at", { ascending: false })
-      .limit(30),
+      .limit(60),
     admin
       .from("delivery_customers")
       .select("*")
@@ -343,40 +475,37 @@ export async function getOwnerDashboardSnapshot(
   const stockRows = stockRes.error ? [] : (stockRes.data ?? []);
   const stockLogRows = stockLogsRes.error ? [] : (stockLogsRes.data ?? []);
 
-  // Fetch walk-in line items for sales in window to count gallons sold accurately
-  const saleIds = posSales.map((s) => s.id);
+  // Read walk-in item quantities directly from the nested relational join (0 extra queries)
   const saleQtyBySaleId = new Map<string, number>();
-
-  if (saleIds.length > 0) {
-    const itemsRes = await admin
-      .from("pos_sale_items")
-      .select("sale_id, quantity")
-      .in("sale_id", saleIds);
-
-    if (!itemsRes.error && itemsRes.data) {
-      for (const item of itemsRes.data) {
-        saleQtyBySaleId.set(
-          item.sale_id,
-          (saleQtyBySaleId.get(item.sale_id) ?? 0) + item.quantity
-        );
+  for (const sale of posSales) {
+    const joinedItems = (
+      sale as unknown as { pos_sale_items?: { quantity: number }[] }
+    ).pos_sale_items;
+    if (Array.isArray(joinedItems)) {
+      let sum = 0;
+      for (const item of joinedItems) {
+        sum += Number(item.quantity) || 0;
       }
+      saleQtyBySaleId.set(sale.id, sum);
     }
   }
 
-  // Daily accumulators for charts
+  // Daily accumulators for Weekly & Monthly charts (and monthly keys for Annual)
   const dailySales = new Map<string, number>();
   const dailyExpenses = new Map<string, number>();
   const dailyWalkinGallons = new Map<string, number>();
   const dailyDeliveryGallons = new Map<string, number>();
 
   const allDates: string[] = [];
-  for (let i = 0; i < rangeDays; i += 1) {
-    const d = addDays(startDate, i);
-    allDates.push(d);
-    dailySales.set(d, 0);
-    dailyExpenses.set(d, 0);
-    dailyWalkinGallons.set(d, 0);
-    dailyDeliveryGallons.set(d, 0);
+  if (rangeDays !== 365) {
+    for (let i = 0; i < rangeDays; i += 1) {
+      const d = addDays(startDate, i);
+      allDates.push(d);
+      dailySales.set(d, 0);
+      dailyExpenses.set(d, 0);
+      dailyWalkinGallons.set(d, 0);
+      dailyDeliveryGallons.set(d, 0);
+    }
   }
 
   let walkinSales = 0;
@@ -537,31 +666,41 @@ export async function getOwnerDashboardSnapshot(
     }
   ).sort((a, b) => b.total - a.total);
 
-  // Build chart series (7 daily points for 7d; 6 five-day buckets for 30d)
+  // Build chart series:
+  // - Weekly (7d): 7 daily bars (Nov 17 .. Nov 23)
+  // - Monthly (30d): 6 five-day buckets with unambiguous cross-month labels (Oct 30–Nov 3)
+  // - Annually (365d): 12 calendar-month bars (Dec .. Nov)
   const salesVsExpensesChart: OwnerChartPoint[] = [];
   const gallonsChart: OwnerChartPoint[] = [];
 
   if (rangeDays === 7) {
     for (const d of allDates) {
       const label = formatShortDate(d);
+      const tooltipLabel = formatFullDate(d);
       salesVsExpensesChart.push({
         label,
+        tooltipLabel,
         primary: roundMoney(dailySales.get(d) ?? 0),
         secondary: roundMoney(dailyExpenses.get(d) ?? 0),
       });
       gallonsChart.push({
         label,
+        tooltipLabel,
         primary: dailyWalkinGallons.get(d) ?? 0,
         secondary: dailyDeliveryGallons.get(d) ?? 0,
       });
     }
-  } else {
+  } else if (rangeDays === 30) {
     const bucketSize = 5;
     for (let i = 0; i < allDates.length; i += bucketSize) {
       const slice = allDates.slice(i, i + bucketSize);
       const first = slice[0];
       const last = slice[slice.length - 1];
-      const label = `${formatShortDate(first)}–${last.slice(8)}`;
+      const sameMonth = first.slice(0, 7) === last.slice(0, 7);
+      const label = sameMonth
+        ? `${formatShortDate(first)}–${Number(last.slice(8))}`
+        : `${formatShortDate(first)}–${formatShortDate(last)}`;
+      const tooltipLabel = `${formatFullDate(first)} – ${formatFullDate(last)}`;
 
       let bucketSales = 0;
       let bucketExp = 0;
@@ -577,13 +716,53 @@ export async function getOwnerDashboardSnapshot(
 
       salesVsExpensesChart.push({
         label,
+        tooltipLabel,
         primary: roundMoney(bucketSales),
         secondary: roundMoney(bucketExp),
       });
       gallonsChart.push({
         label,
+        tooltipLabel,
         primary: bucketWalkin,
         secondary: bucketDel,
+      });
+    }
+  } else {
+    // Annual: aggregate all daily maps into exact YYYY-MM calendar months
+    const monthSales = new Map<string, number>();
+    const monthExpenses = new Map<string, number>();
+    const monthWalkin = new Map<string, number>();
+    const monthDelivery = new Map<string, number>();
+
+    for (const [d, val] of dailySales) {
+      const mk = d.slice(0, 7);
+      monthSales.set(mk, (monthSales.get(mk) ?? 0) + val);
+    }
+    for (const [d, val] of dailyExpenses) {
+      const mk = d.slice(0, 7);
+      monthExpenses.set(mk, (monthExpenses.get(mk) ?? 0) + val);
+    }
+    for (const [d, val] of dailyWalkinGallons) {
+      const mk = d.slice(0, 7);
+      monthWalkin.set(mk, (monthWalkin.get(mk) ?? 0) + val);
+    }
+    for (const [d, val] of dailyDeliveryGallons) {
+      const mk = d.slice(0, 7);
+      monthDelivery.set(mk, (monthDelivery.get(mk) ?? 0) + val);
+    }
+
+    for (const m of annualMonths) {
+      salesVsExpensesChart.push({
+        label: m.shortLabel,
+        tooltipLabel: m.fullLabel,
+        primary: roundMoney(monthSales.get(m.key) ?? 0),
+        secondary: roundMoney(monthExpenses.get(m.key) ?? 0),
+      });
+      gallonsChart.push({
+        label: m.shortLabel,
+        tooltipLabel: m.fullLabel,
+        primary: monthWalkin.get(m.key) ?? 0,
+        secondary: monthDelivery.get(m.key) ?? 0,
       });
     }
   }
@@ -726,8 +905,7 @@ export async function getOwnerDashboardSnapshot(
       title: "Low Gallon Stock",
       detail: `Station on-hand inventory is below ${LOW_STOCK_THRESHOLD} gallons`,
       metric: `${onHandGallons} on hand`,
-      targetTab: "customers",
-      targetSubView: "stock",
+      targetTab: "inventory",
     });
   }
 
@@ -738,8 +916,7 @@ export async function getOwnerDashboardSnapshot(
       title: "Unreturned Borrowed Gallons",
       detail: `${borrowedItems.length} ${borrowedItems.length === 1 ? "customer" : "customers"} currently holding station containers`,
       metric: `${borrowedOutGallons} gal out`,
-      targetTab: "customers",
-      targetSubView: "borrowed",
+      targetTab: "inventory",
     });
   }
 
@@ -955,7 +1132,11 @@ export async function createStationExpense(
     throw new AuthServiceError("Expense amount must be zero or greater.", 400);
   }
 
-  const expenseDate = sanitizeBusinessDate(input.expenseDate);
+  const expenseDate = assertOperationalDateAllowed(
+    input.expenseDate,
+    30,
+    "Expense date"
+  );
   const admin = createSupabaseAdminClient();
 
   const { data, error } = await admin
@@ -1011,7 +1192,8 @@ export async function createStationExpense(
 
 export async function deleteStationExpense(
   ownerId: string,
-  expenseId: string
+  expenseId: string,
+  actorId: string = ownerId
 ): Promise<void> {
   if (!expenseId.trim()) {
     throw new AuthServiceError("Expense ID is required.", 400);
@@ -1043,7 +1225,7 @@ export async function deleteStationExpense(
     await recordFinancialAuditEvent({
       ownerId,
       businessDate: before.expense_date,
-      actorId: ownerId,
+      actorId,
       module: "expense",
       eventType: "expense.deleted",
       entityType: "expense",
@@ -1061,6 +1243,281 @@ export async function deleteStationExpense(
       afterSnapshot: null,
     });
   }
+}
+
+export async function deleteStationExpensesBulk(
+  ownerId: string,
+  actorId: string,
+  ids: string[]
+): Promise<{ deletedCount: number }> {
+  const uniqueIds = Array.from(
+    new Set(ids.map((id) => id.trim()).filter(Boolean))
+  ).slice(0, 100);
+
+  if (uniqueIds.length === 0) {
+    throw new AuthServiceError("Select at least one expense to delete.", 400);
+  }
+
+  const admin = createSupabaseAdminClient();
+  const { data: beforeRows } = await admin
+    .from("station_expenses")
+    .select("*")
+    .eq("owner_id", ownerId)
+    .in("id", uniqueIds);
+
+  const rows = beforeRows ?? [];
+  if (rows.length === 0) {
+    return { deletedCount: 0 };
+  }
+
+  const { error } = await admin
+    .from("station_expenses")
+    .delete()
+    .eq("owner_id", ownerId)
+    .in(
+      "id",
+      rows.map((r) => r.id)
+    );
+
+  if (error) {
+    throw new AuthServiceError(
+      error.message || "Failed to delete selected expenses.",
+      500
+    );
+  }
+
+  for (const before of rows) {
+    const amtCents = toCentavos(before.amount);
+    await recordFinancialAuditEvent({
+      ownerId,
+      businessDate: before.expense_date,
+      actorId,
+      module: "expense",
+      eventType: "expense.deleted",
+      entityType: "expense",
+      entityId: before.id,
+      referenceLabel: `${before.category.toUpperCase()} · ${before.description}`,
+      expenseDeltaCentavos: -amtCents,
+      summary: `Deleted station expense (${before.category}): ${before.description} (-${formatCentavosPHP(amtCents)})`,
+      beforeSnapshot: {
+        category: before.category,
+        description: before.description,
+        amount: toNumber(before.amount),
+        expense_date: before.expense_date,
+        notes: before.notes,
+      },
+      afterSnapshot: null,
+    });
+  }
+
+  return { deletedCount: rows.length };
+}
+
+export interface BulkDeleteSaleItem {
+  id: string;
+  channel: "walkin" | "delivery" | "vendo";
+}
+
+function stripSalePrefix(id: string): string {
+  return id.replace(/^(pos-|del-|ven-)/, "").trim();
+}
+
+export async function deleteOwnerSalesBulk(
+  ownerId: string,
+  actorId: string,
+  items: BulkDeleteSaleItem[]
+): Promise<{ deletedCount: number }> {
+  const safeItems = items.slice(0, 100);
+  if (safeItems.length === 0) {
+    throw new AuthServiceError("Select at least one sale record to delete.", 400);
+  }
+
+  const posIds: string[] = [];
+  const delIds: string[] = [];
+  const venIds: string[] = [];
+
+  for (const item of safeItems) {
+    const rawId = stripSalePrefix(item.id);
+    if (!rawId) continue;
+    if (item.channel === "walkin") posIds.push(rawId);
+    else if (item.channel === "delivery") delIds.push(rawId);
+    else if (item.channel === "vendo") venIds.push(rawId);
+  }
+
+  const admin = createSupabaseAdminClient();
+  let deletedCount = 0;
+
+  // 1. Walk-in POS Sales
+  if (posIds.length > 0) {
+    const { data: beforePos } = await admin
+      .from("pos_sales")
+      .select("*")
+      .eq("owner_id", ownerId)
+      .in("id", posIds);
+
+    const rows = beforePos ?? [];
+    if (rows.length > 0) {
+      const { error } = await admin
+        .from("pos_sales")
+        .delete()
+        .eq("owner_id", ownerId)
+        .in(
+          "id",
+          rows.map((r) => r.id)
+        );
+      if (error) {
+        throw new AuthServiceError(
+          error.message || "Failed to delete selected Walk-in sales.",
+          500
+        );
+      }
+      deletedCount += rows.length;
+
+      for (const sale of rows) {
+        if (sale.status === "completed") {
+          const amtCents = toCentavos(sale.total_amount);
+          await recordFinancialAuditEvent({
+            ownerId,
+            businessDate: sale.business_date,
+            actorId,
+            module: "pos",
+            eventType: "pos.sale.deleted",
+            entityType: "pos_sale",
+            entityId: sale.id,
+            referenceLabel: sale.receipt_no,
+            cashDeltaCentavos: sale.payment_method === "cash" ? -amtCents : 0,
+            digitalDeltaCentavos:
+              sale.payment_method === "gcash" || sale.payment_method === "bank"
+                ? -amtCents
+                : 0,
+            utangDeltaCentavos: sale.payment_method === "utang" ? -amtCents : 0,
+            grossSalesDeltaCentavos: -amtCents,
+            summary: `Deleted Walk-in sale ${sale.receipt_no} (-${formatCentavosPHP(amtCents)})`,
+            beforeSnapshot: {
+              receipt_no: sale.receipt_no,
+              payment_method: sale.payment_method,
+              total_amount: toNumber(sale.total_amount),
+              status: sale.status,
+            },
+            afterSnapshot: null,
+          });
+        }
+      }
+    }
+  }
+
+  // 2. Delivery Sales
+  if (delIds.length > 0) {
+    const { data: beforeDel } = await admin
+      .from("deliveries")
+      .select("*")
+      .eq("owner_id", ownerId)
+      .in("id", delIds);
+
+    const rows = beforeDel ?? [];
+    if (rows.length > 0) {
+      const { error } = await admin
+        .from("deliveries")
+        .delete()
+        .eq("owner_id", ownerId)
+        .in(
+          "id",
+          rows.map((r) => r.id)
+        );
+      if (error) {
+        throw new AuthServiceError(
+          error.message || "Failed to delete selected Delivery records.",
+          500
+        );
+      }
+      deletedCount += rows.length;
+
+      for (const del of rows) {
+        if (del.delivery_status !== "cancelled") {
+          const amtCents = toCentavos(del.total_amount);
+          const isPaid = del.payment_status === "paid";
+          const isCash = del.payment_method === "cash";
+          const isDigital = del.payment_method === "gcash";
+          await recordFinancialAuditEvent({
+            ownerId,
+            businessDate: del.business_date,
+            actorId,
+            module: "delivery",
+            eventType: "delivery.deleted",
+            entityType: "delivery",
+            entityId: del.id,
+            referenceLabel: `${del.customer_name} · ${del.destination}`,
+            cashDeltaCentavos: isPaid && isCash ? -amtCents : 0,
+            digitalDeltaCentavos: isPaid && isDigital ? -amtCents : 0,
+            utangDeltaCentavos: !isPaid ? -amtCents : 0,
+            grossSalesDeltaCentavos: -amtCents,
+            summary: `Deleted Delivery for ${del.customer_name} (-${formatCentavosPHP(amtCents)})`,
+            beforeSnapshot: {
+              customer_name: del.customer_name,
+              destination: del.destination,
+              total_amount: toNumber(del.total_amount),
+              payment_status: del.payment_status,
+              payment_method: del.payment_method,
+            },
+            afterSnapshot: null,
+          });
+        }
+      }
+    }
+  }
+
+  // 3. Vendo Collections
+  if (venIds.length > 0) {
+    const { data: beforeVen } = await admin
+      .from("vendo_collections")
+      .select("*")
+      .eq("owner_id", ownerId)
+      .in("id", venIds);
+
+    const rows = beforeVen ?? [];
+    if (rows.length > 0) {
+      const { error } = await admin
+        .from("vendo_collections")
+        .delete()
+        .eq("owner_id", ownerId)
+        .in(
+          "id",
+          rows.map((r) => r.id)
+        );
+      if (error) {
+        throw new AuthServiceError(
+          error.message || "Failed to delete selected Vendo collections.",
+          500
+        );
+      }
+      deletedCount += rows.length;
+
+      for (const ven of rows) {
+        const amtCents = toCentavos(ven.amount);
+        await recordFinancialAuditEvent({
+          ownerId,
+          businessDate: ven.business_date,
+          actorId,
+          module: "vendo",
+          eventType: "vendo.deleted",
+          entityType: "vendo",
+          entityId: ven.id,
+          referenceLabel: ven.machine_name,
+          cashDeltaCentavos: -amtCents,
+          grossSalesDeltaCentavos: -amtCents,
+          summary: `Deleted Vendo income for ${ven.machine_name} (-${formatCentavosPHP(amtCents)})`,
+          beforeSnapshot: {
+            machine_name: ven.machine_name,
+            period_type: ven.period_type,
+            amount: toNumber(ven.amount),
+          },
+          afterSnapshot: null,
+        });
+      }
+    }
+  }
+
+  return { deletedCount };
 }
 
 function escapeCsvCell(value: string | number | null | undefined): string {

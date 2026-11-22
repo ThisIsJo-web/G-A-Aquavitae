@@ -1,6 +1,6 @@
 /**
- * Separate Interactive E2E Test Suite — CASHIER MODULE (/cashier)
- * Runs against a live AquaVitae server (default: http://127.0.0.1:3005)
+ * Interactive E2E Test Suite — CASHIER MODULE (/cashier)
+ * Runs against a live G & A Aqua Vitae server (default: http://127.0.0.1:3000)
  * Usage: npm run test:cashier
  */
 
@@ -84,7 +84,7 @@ function assert(condition, label, detail = "") {
 
 async function runCashierTests() {
   console.log(`\n=======================================================`);
-  console.log(` AquaVitae CASHIER Interactive E2E Test Suite`);
+  console.log(` G & A Aqua Vitae — CASHIER E2E Test Suite`);
   console.log(` Target: ${BASE_URL} | Account: ${CASHIER_EMAIL}`);
   console.log(`=======================================================\n`);
 
@@ -101,40 +101,72 @@ async function runCashierTests() {
     `status=${login.status} body=${login.text.slice(0, 140)}`
   );
 
-  // 2. Strict RBAC Separation: Cashier MUST NOT access Owner endpoints or /owner page
+  // 2. Hierarchical RBAC: Cashier MUST NOT access Owner, Inventory, or Superadmin endpoints
   const ownerApi = await client.request("/api/owner/dashboard");
   assert(
     ownerApi.status === 403,
     "RBAC: Cashier blocked from /api/owner/dashboard (403)",
     `got ${ownerApi.status}`
   );
-  const auditApi = await client.request("/api/owner/audit");
+  const ownerInvApi = await client.request("/api/owner/inventory");
   assert(
-    auditApi.status === 403,
-    "RBAC: Cashier blocked from /api/owner/audit (403)",
-    `got ${auditApi.status}`
+    ownerInvApi.status === 403,
+    "RBAC: Cashier blocked from /api/owner/inventory (403 — Inventory belongs to Owner)",
+    `got ${ownerInvApi.status}`
+  );
+  const oldCashierInvApi = await client.request("/api/cashier/inventory");
+  assert(
+    oldCashierInvApi.status === 403,
+    "RBAC: Cashier blocked from /api/cashier/inventory (403 — moved to Owner)",
+    `got ${oldCashierInvApi.status}`
+  );
+  const superAuditApi = await client.request("/api/superadmin/audit-logs");
+  assert(
+    superAuditApi.status === 403,
+    "RBAC: Cashier blocked from /api/superadmin/audit-logs (403)",
+    `got ${superAuditApi.status}`
   );
   const ownerPage = await client.request("/owner");
   assert(
-    ownerPage.text.includes("Station Owner Access Only"),
-    "RBAC: /owner renders 403 Station Owner Access Only for Cashier"
+    ownerPage.text.includes("Station Owner Access Only") ||
+      ownerPage.text.includes("Access Restricted"),
+    "RBAC: /owner renders access restricted notice for Cashier"
   );
 
-  // 3. Walk-in POS Overview & Default Products (Refill ₱20, Gallon Filled with Water ₱160)
-  const posGet = await client.request("/api/cashier/pos");
+  // 3. Consolidated Cashier Workspace Snapshot
+  const workspaceRes = await client.request("/api/cashier/workspace");
   assert(
-    posGet.status === 200 && Array.isArray(posGet.json?.products),
-    "GET /api/cashier/pos loads station products"
+    workspaceRes.status === 200 &&
+      Array.isArray(workspaceRes.json?.pos?.products),
+    "GET /api/cashier/workspace returns consolidated snapshot in 1 request"
   );
-  const products = posGet.json?.products ?? [];
+  const products = workspaceRes.json?.pos?.products ?? [];
   const refill = products.find((p) => p.category === "refill") ?? products[0];
-  const filled = products.find((p) => p.category === "container") ?? products[1] ?? refill;
+  const filled =
+    products.find((p) => p.category === "container") ?? products[1] ?? refill;
   assert(
     Boolean(refill),
     `Default Walk-in products available (${products.map((p) => `${p.name} ₱${p.unit_price}`).join(", ")})`
   );
 
-  // 4. Walk-in POS — Cash Sale with Discount & Tendered/Change
+  // 4. Date Window Restriction: Future dates MUST be rejected (400)
+  const futureDate = "2099-12-31";
+  const futureVendo = await client.request("/api/cashier/vendo", {
+    method: "POST",
+    body: JSON.stringify({
+      machineName: "Future Test Vendo",
+      periodType: "daily",
+      collectionDate: futureDate,
+      amount: 100,
+    }),
+  });
+  assert(
+    futureVendo.status === 400,
+    "Date guard: Future date rejected on Vendo income (400)",
+    `got ${futureVendo.status}`
+  );
+
+  // 5. Walk-in POS — Cash Sale with Discount & Tendered/Change
   const cashSale = await client.request("/api/cashier/pos", {
     method: "POST",
     body: JSON.stringify({
@@ -154,7 +186,7 @@ async function runCashierTests() {
     `status=${cashSale.status} body=${cashSale.text.slice(0, 140)}`
   );
 
-  // 5. Walk-in POS — GCash Sale (we will request Owner Payment Fix -> Cash!)
+  // 6. Walk-in POS — GCash Sale (request Owner Payment Fix -> Cash)
   const gcashSale = await client.request("/api/cashier/pos", {
     method: "POST",
     body: JSON.stringify({
@@ -173,7 +205,7 @@ async function runCashierTests() {
     `status=${gcashSale.status}`
   );
 
-  // 6. Walk-in POS — Utang Sale
+  // 7. Walk-in POS — Utang Sale
   const utangSale = await client.request("/api/cashier/pos", {
     method: "POST",
     body: JSON.stringify({
@@ -189,18 +221,21 @@ async function runCashierTests() {
     `status=${utangSale.status} body=${utangSale.text.slice(0, 140)}`
   );
 
-  // 7. Walk-in POS — Same-day quick void (Option A allowed)
-  const voidRes = await client.request(`/api/cashier/pos/${cashSale.json?.sale?.id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ action: "void", reason: "QA duplicate tap test" }),
-  });
+  // 8. Walk-in POS — Same-day quick void
+  const voidRes = await client.request(
+    `/api/cashier/pos/${cashSale.json?.sale?.id}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ action: "void", reason: "QA duplicate tap test" }),
+    }
+  );
   assert(
     voidRes.status === 200 && voidRes.json?.sale?.status === "voided",
-    "Option A: Same-day Walk-in quick-void succeeds",
+    "Same-day Walk-in quick-void succeeds",
     `status=${voidRes.status}`
   );
 
-  // 8. Deliveries — Record delivery with Gallon In & Out + Unpaid -> Paid + Direct Cancel Blocked (403)
+  // 9. Deliveries — Record delivery (no gallonType field!) + Unpaid -> Paid + Direct Cancel Blocked (403)
   const delCreate = await client.request("/api/cashier/deliveries", {
     method: "POST",
     body: JSON.stringify({
@@ -226,27 +261,34 @@ async function runCashierTests() {
     `status=${delCreate.status} body=${delCreate.text.slice(0, 140)}`
   );
 
-  const directCancel = await client.request(`/api/cashier/deliveries/${deliveryId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ cancelled: true }),
-  });
+  const directCancel = await client.request(
+    `/api/cashier/deliveries/${deliveryId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ cancelled: true }),
+    }
+  );
   assert(
     directCancel.status === 403,
-    "Option A: Cashier blocked from directly cancelling delivery (403 -> requires Owner approval)",
+    "Cashier blocked from directly cancelling delivery (403 -> requires Owner review)",
     `got ${directCancel.status}`
   );
 
-  const settleDel = await client.request(`/api/cashier/deliveries/${deliveryId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ paymentStatus: "paid", paymentMethod: "cash" }),
-  });
+  const settleDel = await client.request(
+    `/api/cashier/deliveries/${deliveryId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ paymentStatus: "paid", paymentMethod: "cash" }),
+    }
+  );
   assert(
-    settleDel.status === 200 && settleDel.json?.delivery?.payment_status === "paid",
+    settleDel.status === 200 &&
+      settleDel.json?.delivery?.payment_status === "paid",
     "Cashier settles unpaid delivery to Paid (Cash)",
     `status=${settleDel.status}`
   );
 
-  // 9. Vendo Collection
+  // 10. Vendo Collection
   const vendoRes = await client.request("/api/cashier/vendo", {
     method: "POST",
     body: JSON.stringify({
@@ -258,27 +300,11 @@ async function runCashierTests() {
   });
   assert(
     vendoRes.status === 201 && vendoRes.json?.collection?.amount === 145.5,
-    "Vendo daily coin income logged with centavo precision (₱145.50)",
+    "Vendo daily coin income logged accurately (₱145.50)",
     `status=${vendoRes.status}`
   );
 
-  // 10. Gallon Inventory Restock
-  const invRes = await client.request("/api/cashier/inventory", {
-    method: "POST",
-    body: JSON.stringify({
-      gallonType: "slim",
-      movementType: "restock",
-      quantity: 25,
-      notes: "QA initial stock",
-    }),
-  });
-  assert(
-    invRes.status === 201,
-    "Gallon inventory restock (+25) recorded",
-    `status=${invRes.status}`
-  );
-
-  // 11. Submit Owner Supervision Correction Request (GCash -> Cash on gcashSaleId)
+  // 11. Submit Owner Review Request (GCash -> Cash on gcashSaleId)
   const corrRes = await client.request("/api/cashier/corrections", {
     method: "POST",
     body: JSON.stringify({
@@ -291,7 +317,7 @@ async function runCashierTests() {
   });
   assert(
     corrRes.status === 201 && corrRes.json?.request?.status === "pending",
-    `Submitted Owner Supervision Correction Request (${corrRes.json?.request?.entity_label})`,
+    `Submitted Owner Review request (${corrRes.json?.request?.entity_label})`,
     `status=${corrRes.status} body=${corrRes.text.slice(0, 140)}`
   );
 

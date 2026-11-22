@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
-import { isValidRole, updateManagedUser } from "@/backend/services/users";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
+import {
+  isValidRole,
+  requireActiveProfile,
+  updateManagedUser,
+} from "@/backend/services/users";
 
 interface UpdateUserBody {
   role?: unknown;
@@ -26,14 +35,14 @@ export async function PATCH(
 
   if (body.role !== undefined && !isValidRole(body.role)) {
     return NextResponse.json(
-      { error: "Role must be one of: superadmin, owner, cashier, staff" },
+      { error: "Role must be superadmin, owner, cashier, or staff" },
       { status: 400 }
     );
   }
 
   if (body.isActive !== undefined && typeof body.isActive !== "boolean") {
     return NextResponse.json(
-      { error: "isActive must be a boolean" },
+      { error: "Active status must be true or false" },
       { status: 400 }
     );
   }
@@ -43,12 +52,13 @@ export async function PATCH(
     typeof body.isOwnerCashier !== "boolean"
   ) {
     return NextResponse.json(
-      { error: "isOwnerCashier must be a boolean" },
+      { error: "Owner cashier flag must be true or false" },
       { status: 400 }
     );
   }
 
   try {
+    const actor = await requireActiveProfile();
     const user = await updateManagedUser(id, {
       role: isValidRole(body.role) ? body.role : undefined,
       isActive:
@@ -65,6 +75,39 @@ export async function PATCH(
         typeof body.isOwnerCashier === "boolean"
           ? body.isOwnerCashier
           : undefined,
+    });
+
+    const meta = extractRequestMeta(request);
+    const changeSummary =
+      typeof body.isActive === "boolean"
+        ? body.isActive
+          ? `Activated account (${user.email})`
+          : `Deactivated account (${user.email})`
+        : body.role
+          ? `Changed role of ${user.email} to ${user.role}`
+          : `Updated account (${user.email})`;
+
+    scheduleActivityLog({
+      actor: {
+        id: actor.id,
+        name: actor.full_name || actor.email,
+        email: actor.email,
+        role: actor.role,
+      },
+      stationOwnerId: user.owner_id ?? (user.role === "owner" ? user.id : null),
+      module: "accounts",
+      action: changeSummary,
+      controlLabel:
+        typeof body.isActive === "boolean"
+          ? body.isActive
+            ? "Activate Account"
+            : "Deactivate Account"
+          : "Update Account",
+      targetType: "account",
+      targetId: user.id,
+      targetLabel: user.email,
+      route: "/api/users/[id]",
+      ...meta,
     });
 
     return NextResponse.json(

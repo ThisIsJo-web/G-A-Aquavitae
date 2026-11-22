@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import { requireOwnerAccess } from "@/backend/services/auth-guards";
 import { reviewCorrectionRequest } from "@/backend/services/corrections";
 
@@ -20,20 +25,45 @@ export async function PATCH(
     (body.decision !== "approved" && body.decision !== "rejected")
   ) {
     return NextResponse.json(
-      { error: "decision must be 'approved' or 'rejected'." },
+      { error: "Decision must be approved or rejected." },
       { status: 400 }
     );
   }
 
   try {
-    const owner = await requireOwnerAccess();
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
     const updated = await reviewCorrectionRequest({
-      ownerId: owner.id,
-      reviewerId: owner.id,
+      ownerId: tenantOwnerId,
+      reviewerId: profile.id,
       requestId: id,
       decision: body.decision,
       reviewerNote:
         typeof body.reviewerNote === "string" ? body.reviewerNote : undefined,
+    });
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "supervision",
+      action:
+        body.decision === "approved"
+          ? `Approved Correction: ${updated.entity_label}`
+          : `Rejected Correction: ${updated.entity_label}`,
+      controlLabel: body.decision === "approved" ? "Approve & Apply" : "Reject",
+      targetType: updated.entity_type,
+      targetId: updated.entity_id,
+      targetLabel: updated.entity_label,
+      route: "/api/owner/corrections/[id]",
+      ...meta,
     });
 
     return NextResponse.json({ request: updated }, { status: 200 });

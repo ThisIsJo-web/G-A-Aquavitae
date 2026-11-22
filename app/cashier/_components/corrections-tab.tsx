@@ -30,7 +30,7 @@ export function CashierCorrectionsTab({ data }: CashierCorrectionsTabProps) {
       {data.schemaMissing && (
         <NoticeBanner
           tone="info"
-          message="The correction_requests table is not created yet. Ask your admin to run Section 12d of backend/db/schema.sql in Supabase SQL Editor."
+          message="Correction history is still being set up. Please contact your system administrator."
         />
       )}
 
@@ -39,13 +39,13 @@ export function CashierCorrectionsTab({ data }: CashierCorrectionsTabProps) {
           highlighted
           label="Waiting for Owner"
           value={data.pendingCount}
-          sublabel="Pending owner supervision"
+          sublabel="Pending owner review"
           icon={<Clock className="h-5 w-5" />}
         />
         <QuickStatCard
           label="Approved Fixes"
           value={data.approvedCount}
-          sublabel="Applied by station owner"
+          sublabel="Applied to station records"
           icon={<CheckCircle2 className="h-5 w-5" />}
         />
         <QuickStatCard
@@ -58,11 +58,11 @@ export function CashierCorrectionsTab({ data }: CashierCorrectionsTabProps) {
 
       <section className="av-card p-6">
         <div className="mb-4">
-          <h2 className="text-base font-bold text-[#111111]">
-            Owner Review History ({data.requests.length})
+          <h2 className="text-base font-bold text-[var(--av-ink)]">
+            Correction History ({data.requests.length})
           </h2>
-          <p className="text-xs text-[#71717A]">
-            Track error corrections you flagged from Walk-in POS, Deliveries,
+          <p className="text-xs text-[var(--av-muted)]">
+            Track fixes submitted or applied from Walk-in POS, Deliveries,
             Vendo, or Closed Shifts.
           </p>
         </div>
@@ -70,19 +70,19 @@ export function CashierCorrectionsTab({ data }: CashierCorrectionsTabProps) {
         {data.requests.length === 0 ? (
           <EmptyState
             icon={<ShieldCheck className="h-5 w-5" />}
-            title="No correction requests submitted"
-            description='Use the "⋯" menu on any Walk-in receipt, Delivery, Vendo entry, or Closed Shift to request Owner approval for a fix.'
+            title="No correction requests yet"
+            description='Use the "⋯" menu on any Walk-in receipt, Delivery, Vendo entry, or Closed Shift to submit or apply a correction.'
           />
         ) : (
           <div className="space-y-2.5">
             {data.requests.map((req) => (
               <div
                 key={req.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[#F7F7F9] px-4 py-3.5 text-xs"
+                className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[var(--av-surface-subtle)] px-4 py-3.5 text-xs"
               >
                 <div className="min-w-0 space-y-0.5">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-bold text-[#111111]">
+                    <span className="font-bold text-[var(--av-ink)]">
                       {req.entity_label}
                     </span>
                     <StatusChip
@@ -90,10 +90,12 @@ export function CashierCorrectionsTab({ data }: CashierCorrectionsTabProps) {
                       tone="outline"
                     />
                   </div>
-                  <div className="text-[#52525B]">Reason: {req.reason}</div>
+                  <div className="text-[var(--av-ink-secondary)]">
+                    Reason: {req.reason}
+                  </div>
                   {req.reviewer_note && (
-                    <div className="text-[11px] font-semibold text-[#111111]">
-                      Owner note: {req.reviewer_note}
+                    <div className="text-[11px] font-semibold text-[var(--av-ink)]">
+                      Note: {req.reviewer_note}
                     </div>
                   )}
                 </div>
@@ -111,12 +113,12 @@ export function CashierCorrectionsTab({ data }: CashierCorrectionsTabProps) {
                       req.status === "pending"
                         ? "solid"
                         : req.status === "approved"
-                          ? "soft"
+                          ? "green"
                           : "outline"
                     }
                     dot
                   />
-                  <span className="text-[11px] text-[#71717A] tabular-nums">
+                  <span className="text-[11px] text-[var(--av-muted)] tabular-nums">
                     {new Date(req.created_at).toLocaleString()}
                   </span>
                 </div>

@@ -1,24 +1,63 @@
 import "server-only";
 
-import { createSupabaseServerClient } from "@/backend/db/supabase";
+import { createSupabaseAdminClient } from "@/backend/db/supabase";
 import type { UserRole } from "@/backend/db/types";
 import { AuthServiceError } from "@/backend/services/auth";
 import {
-  getSuperadminElevationStatus,
-  getSuperadminTotpState,
-  listAuditTargetAccounts,
-  type AuditTargetAccount,
-  type SuperadminElevationPayload,
-  type TotpFactorSummary,
-} from "@/backend/services/superadmin-elevation";
-import {
+  getRequestProfile,
   requireActiveProfile,
   type UserProfile,
 } from "@/backend/services/users";
 
+export interface StationOption {
+  id: string;
+  email: string;
+  fullName: string | null;
+}
+
 /**
- * Throws AuthServiceError(401 | 403) unless the caller is an active superadmin.
- * Use in API Route Handlers and Server Actions.
+ * Lists active Owner stations (used by Superadmin when operating Owner/Cashier modules).
+ */
+export async function listActiveOwnerStations(): Promise<StationOption[]> {
+  const admin = createSupabaseAdminClient();
+  const { data, error } = await admin
+    .from("profiles")
+    .select("id, email, full_name")
+    .eq("role", "owner")
+    .eq("is_active", true)
+    .order("created_at", { ascending: true });
+
+  if (error || !data) return [];
+  return data.map((row) => ({
+    id: row.id,
+    email: row.email,
+    fullName: row.full_name,
+  }));
+}
+
+async function resolveSuperadminStation(
+  requestedOwnerId?: string | null
+): Promise<{ tenantOwnerId: string; stations: StationOption[] }> {
+  const stations = await listActiveOwnerStations();
+  if (stations.length === 0) {
+    throw new AuthServiceError(
+      "No active Owner station exists yet. Create an Owner account in Accounts & Roles first.",
+      400
+    );
+  }
+
+  if (requestedOwnerId) {
+    const matched = stations.find((s) => s.id === requestedOwnerId);
+    if (matched) {
+      return { tenantOwnerId: matched.id, stations };
+    }
+  }
+
+  return { tenantOwnerId: stations[0].id, stations };
+}
+
+/**
+ * Throws AuthServiceError(401 | 403) unless the caller is an active Superadmin.
  */
 export async function requireSuperadmin(): Promise<UserProfile> {
   const profile = await requireActiveProfile();
@@ -39,27 +78,17 @@ export type SuperadminPageContext =
  * Non-throwing Server Component helper for /superadmin/* pages.
  */
 export async function getSuperadminPageContext(): Promise<SuperadminPageContext> {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
+  const session = await getRequestProfile();
+  if (!session) {
     return { status: "unauthenticated" };
   }
 
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  if (profileError || !profile || !profile.is_active) {
+  const profile = session.profile;
+  if (!profile || !profile.is_active) {
     return {
       status: "forbidden",
       role: null,
-      email: user.email ?? null,
+      email: session.email,
     };
   }
 
@@ -74,70 +103,101 @@ export async function getSuperadminPageContext(): Promise<SuperadminPageContext>
   return { status: "ok", profile };
 }
 
-export interface CashierAccessContext {
+export interface TenantAccessContext {
   profile: UserProfile;
   tenantOwnerId: string;
-  elevation: SuperadminElevationPayload | null;
 }
 
+export type CashierAccessContext = TenantAccessContext;
+export type OwnerAccessContext = TenantAccessContext;
+
 /**
- * API Route guard for /api/cashier/*:
- * - cashier: direct access to assigned owner station (tenantOwnerId = profile.owner_id)
- * - superadmin: ONLY allowed with an active 2-Step Integrity Elevation cookie
- * - owner / staff / others: 403 Forbidden (owners must use their own marked Cashier account)
+ * Hierarchical API Route guard for /api/cashier/*:
+ * - cashier: access to assigned owner station (tenantOwnerId = profile.owner_id)
+ * - owner: direct access to their own station (tenantOwnerId = profile.id)
+ * - superadmin: direct access to selected or default active Owner station
  */
-export async function requireCashierAccess(): Promise<CashierAccessContext> {
+export async function requireCashierAccess(
+  requestedStationId?: string | null
+): Promise<CashierAccessContext> {
   const profile = await requireActiveProfile();
 
   if (profile.role === "owner") {
-    throw new AuthServiceError(
-      "Station Owners cannot operate the Cashier page directly. Create a Cashier account marked as 'My Account' in Staff Accounts and sign in with it to use the Cashier Dashboard.",
-      403
-    );
+    return {
+      profile,
+      tenantOwnerId: profile.id,
+    };
   }
 
   if (profile.role === "cashier") {
     if (!profile.owner_id) {
       throw new AuthServiceError(
-        "This cashier account is not assigned to an Owner station yet.",
+        "This cashier account is not assigned to a station yet.",
         403
       );
     }
     return {
       profile,
       tenantOwnerId: profile.owner_id,
-      elevation: null,
     };
   }
 
   if (profile.role === "superadmin") {
-    const elevation = await getSuperadminElevationStatus(profile.id);
-    if (!elevation) {
-      throw new AuthServiceError(
-        "Superadmin 2-step integrity verification is required to access Cashier operations.",
-        403
-      );
-    }
+    const { tenantOwnerId } = await resolveSuperadminStation(requestedStationId);
     return {
       profile,
-      tenantOwnerId: elevation.targetOwnerId,
-      elevation,
+      tenantOwnerId,
     };
   }
 
   throw new AuthServiceError(
-    "Cashier operations are restricted to Cashier accounts.",
+    "Cashier operations are restricted to Cashier, Owner, and Superadmin accounts.",
     403
   );
 }
 
 /**
- * Enforces that riders can only be created or managed by Cashier or Owner accounts.
+ * Hierarchical API Route guard for /api/owner/*:
+ * - owner: access to their own station (tenantOwnerId = profile.id)
+ * - superadmin: direct access to selected or default active Owner station
+ */
+export async function requireOwnerAccess(
+  requestedStationId?: string | null
+): Promise<OwnerAccessContext> {
+  const profile = await requireActiveProfile();
+
+  if (profile.role === "owner") {
+    return {
+      profile,
+      tenantOwnerId: profile.id,
+    };
+  }
+
+  if (profile.role === "superadmin") {
+    const { tenantOwnerId } = await resolveSuperadminStation(requestedStationId);
+    return {
+      profile,
+      tenantOwnerId,
+    };
+  }
+
+  throw new AuthServiceError(
+    "Owner dashboard access is restricted to Owner and Superadmin accounts.",
+    403
+  );
+}
+
+/**
+ * Enforces that riders can be managed by Superadmin, Owner, or Cashier accounts.
  */
 export function assertRiderManagerRole(profile: UserProfile): void {
-  if (profile.role !== "owner" && profile.role !== "cashier") {
+  if (
+    profile.role !== "superadmin" &&
+    profile.role !== "owner" &&
+    profile.role !== "cashier"
+  ) {
     throw new AuthServiceError(
-      "Riders can only be managed by Cashier or Owner accounts.",
+      "Riders can only be managed by Cashier, Owner, or Superadmin accounts.",
       403
     );
   }
@@ -152,54 +212,39 @@ export type CashierPageContext =
       reason: string;
     }
   | {
-      status: "superadmin_needs_verification";
-      profile: UserProfile;
-      totp: TotpFactorSummary;
-      targets: AuditTargetAccount[];
-    }
-  | {
       status: "ok";
       profile: UserProfile;
       tenantOwnerId: string;
-      elevation: SuperadminElevationPayload | null;
+      stations: StationOption[];
     };
 
 /**
- * Non-throwing Server Component helper for /cashier page gating.
+ * Non-throwing Server Component helper for /cashier page gating (Hierarchical: Superadmin > Owner > Cashier).
  */
-export async function getCashierPageContext(): Promise<CashierPageContext> {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
+export async function getCashierPageContext(
+  requestedStationId?: string | null
+): Promise<CashierPageContext> {
+  const session = await getRequestProfile();
+  if (!session) {
     return { status: "unauthenticated" };
   }
 
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  if (profileError || !profile || !profile.is_active) {
+  const profile = session.profile;
+  if (!profile || !profile.is_active) {
     return {
       status: "forbidden",
       role: null,
-      email: user.email ?? null,
+      email: session.email,
       reason: "Your account is inactive or missing a profile.",
     };
   }
 
   if (profile.role === "owner") {
     return {
-      status: "forbidden",
-      role: profile.role,
-      email: profile.email,
-      reason:
-        "Station Owners cannot access the Cashier page directly. Create a Cashier account marked as 'My Account' under Staff Accounts in your Owner Dashboard, then sign in with that Cashier account.",
+      status: "ok",
+      profile,
+      tenantOwnerId: profile.id,
+      stations: [],
     };
   }
 
@@ -210,7 +255,7 @@ export async function getCashierPageContext(): Promise<CashierPageContext> {
         role: profile.role,
         email: profile.email,
         reason:
-          "Your cashier account has not been assigned to an Owner station yet. Ask Superadmin to assign your Owner.",
+          "Your cashier account has not been assigned to a station yet. Ask your administrator to assign your station.",
       };
     }
 
@@ -218,31 +263,30 @@ export async function getCashierPageContext(): Promise<CashierPageContext> {
       status: "ok",
       profile,
       tenantOwnerId: profile.owner_id,
-      elevation: null,
+      stations: [],
     };
   }
 
   if (profile.role === "superadmin") {
-    const elevation = await getSuperadminElevationStatus(profile.id);
-    if (elevation) {
+    const stations = await listActiveOwnerStations();
+    if (stations.length === 0) {
       return {
-        status: "ok",
-        profile,
-        tenantOwnerId: elevation.targetOwnerId,
-        elevation,
+        status: "forbidden",
+        role: profile.role,
+        email: profile.email,
+        reason:
+          "No active Owner station exists yet. Create an Owner account under Accounts & Roles first.",
       };
     }
-
-    const [totp, targets] = await Promise.all([
-      getSuperadminTotpState(),
-      listAuditTargetAccounts(),
-    ]);
+    const matched = requestedStationId
+      ? stations.find((s) => s.id === requestedStationId)
+      : null;
 
     return {
-      status: "superadmin_needs_verification",
+      status: "ok",
       profile,
-      totp,
-      targets,
+      tenantOwnerId: matched ? matched.id : stations[0].id,
+      stations,
     };
   }
 
@@ -250,25 +294,8 @@ export async function getCashierPageContext(): Promise<CashierPageContext> {
     status: "forbidden",
     role: profile.role,
     email: profile.email,
-    reason: "Cashier operations are restricted to Owner and Cashier roles.",
+    reason: "Cashier operations are restricted to Cashier, Owner, and Superadmin accounts.",
   };
-}
-
-/**
- * Throws AuthServiceError(401 | 403) unless the caller is an active Owner.
- * Use in /api/owner/* Route Handlers.
- */
-export async function requireOwnerAccess(): Promise<UserProfile> {
-  const profile = await requireActiveProfile();
-
-  if (profile.role !== "owner") {
-    throw new AuthServiceError(
-      "Owner dashboard access is restricted to Owner accounts.",
-      403
-    );
-  }
-
-  return profile;
 }
 
 export type OwnerPageContext =
@@ -279,45 +306,70 @@ export type OwnerPageContext =
       email: string | null;
       reason: string;
     }
-  | { status: "ok"; profile: UserProfile };
+  | {
+      status: "ok";
+      profile: UserProfile;
+      tenantOwnerId: string;
+      stations: StationOption[];
+    };
 
 /**
- * Non-throwing Server Component helper for /owner page gating.
+ * Non-throwing Server Component helper for /owner page gating (Hierarchical: Superadmin > Owner).
  */
-export async function getOwnerPageContext(): Promise<OwnerPageContext> {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
+export async function getOwnerPageContext(
+  requestedStationId?: string | null
+): Promise<OwnerPageContext> {
+  const session = await getRequestProfile();
+  if (!session) {
     return { status: "unauthenticated" };
   }
 
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  if (profileError || !profile || !profile.is_active) {
+  const profile = session.profile;
+  if (!profile || !profile.is_active) {
     return {
       status: "forbidden",
       role: null,
-      email: user.email ?? null,
+      email: session.email,
       reason: "Your account is inactive or missing a profile.",
     };
   }
 
-  if (profile.role !== "owner") {
+  if (profile.role === "owner") {
     return {
-      status: "forbidden",
-      role: profile.role,
-      email: profile.email,
-      reason: "Owner dashboard is restricted to Station Owner accounts.",
+      status: "ok",
+      profile,
+      tenantOwnerId: profile.id,
+      stations: [],
     };
   }
 
-  return { status: "ok", profile };
+  if (profile.role === "superadmin") {
+    const stations = await listActiveOwnerStations();
+    if (stations.length === 0) {
+      return {
+        status: "forbidden",
+        role: profile.role,
+        email: profile.email,
+        reason:
+          "No active Owner station exists yet. Create an Owner account under Accounts & Roles first.",
+      };
+    }
+    const matched = requestedStationId
+      ? stations.find((s) => s.id === requestedStationId)
+      : null;
+
+    return {
+      status: "ok",
+      profile,
+      tenantOwnerId: matched ? matched.id : stations[0].id,
+      stations,
+    };
+  }
+
+  return {
+    status: "forbidden",
+    role: profile.role,
+    email: profile.email,
+    reason: "Owner dashboard is restricted to Owner and Superadmin accounts.",
+  };
 }

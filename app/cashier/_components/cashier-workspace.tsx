@@ -1,11 +1,12 @@
 "use client";
 
 import {
+  Activity,
+  Building2,
   Calendar,
   Calculator,
   Coins,
   LayoutDashboard,
-  Package,
   RefreshCw,
   ShieldCheck,
   ShoppingBag,
@@ -13,7 +14,16 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppShell, type AppNavItem } from "@/app/_components/ui/app-shell";
+import { trackAction } from "@/app/_components/activity-tracker";
+import {
+  AppShell,
+  type AppNavItem,
+  type AppSidebarLink,
+} from "@/app/_components/ui/app-shell";
+import {
+  addIsoDaysClient,
+  clampIsoDate,
+} from "@/app/_components/ui/input-validation";
 import { NoticeBanner } from "@/app/_components/ui/monochrome-controls";
 import type { CorrectionRequestsOverview } from "@/backend/services/corrections";
 import {
@@ -22,15 +32,13 @@ import {
 } from "./correction-request-modal";
 import { CashierCorrectionsTab } from "./corrections-tab";
 import { DeliveriesTab } from "./deliveries-tab";
-import { InventoryTab } from "./inventory-tab";
 import { ShiftClosingTab } from "./shift-closing-tab";
 import {
   formatPHP,
   type DeliveriesOverviewDTO,
-  type ElevationBannerDTO,
-  type InventoryOverviewDTO,
   type PosOverviewDTO,
   type ShiftClosingOverviewDTO,
+  type StationOptionDTO,
   type UserRole,
   type VendoOverviewDTO,
 } from "./types";
@@ -43,25 +51,18 @@ interface CashierWorkspaceProps {
     email: string;
     fullName: string | null;
     role: UserRole;
-    isOwnerCashier?: boolean;
   };
-  elevation: ElevationBannerDTO | null;
+  stationOwnerId: string;
+  stations: StationOptionDTO[];
   initialDate: string;
   initialPos: PosOverviewDTO;
   initialDeliveries: DeliveriesOverviewDTO;
   initialVendo: VendoOverviewDTO;
-  initialInventory: InventoryOverviewDTO;
   initialShift: ShiftClosingOverviewDTO;
   initialCorrections: CorrectionRequestsOverview;
 }
 
-type CashierTab =
-  | "pos"
-  | "deliveries"
-  | "vendo"
-  | "inventory"
-  | "shift"
-  | "reviews";
+type CashierTab = "pos" | "deliveries" | "vendo" | "shift" | "reviews";
 
 const TAB_TITLES: Record<CashierTab, { title: string; subtitle: string }> = {
   pos: {
@@ -70,46 +71,41 @@ const TAB_TITLES: Record<CashierTab, { title: string; subtitle: string }> = {
   },
   deliveries: {
     title: "Deliveries",
-    subtitle: "Regular customers, gallon In & Out, and daily/weekly/monthly tallies",
+    subtitle: "Regular customers, gallon swap tracking, and daily/weekly/monthly tallies",
   },
   vendo: {
     title: "Vendo Income",
     subtitle: "Daily and weekly water vendo coin collections",
-  },
-  inventory: {
-    title: "Gallon Inventory",
-    subtitle: "Daily station stock and customer borrowed gallons",
   },
   shift: {
     title: "Closing Shift Tally",
     subtitle: "Automatic daily peso tally and Over / Short cash check",
   },
   reviews: {
-    title: "Owner Reviews",
-    subtitle: "Correction requests sent for Station Owner approval",
+    title: "Correction History",
+    subtitle: "Requests and adjustments reviewed for station records",
   },
 };
 
 export function CashierWorkspace({
   currentUser,
-  elevation,
+  stationOwnerId,
+  stations,
   initialDate,
   initialPos,
   initialDeliveries,
   initialVendo,
-  initialInventory,
   initialShift,
   initialCorrections,
 }: CashierWorkspaceProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<CashierTab>("pos");
   const [businessDate, setBusinessDate] = useState(initialDate);
+  const [selectedStation, setSelectedStation] = useState(stationOwnerId);
   const [pos, setPos] = useState<PosOverviewDTO>(initialPos);
   const [deliveries, setDeliveries] =
     useState<DeliveriesOverviewDTO>(initialDeliveries);
   const [vendo, setVendo] = useState<VendoOverviewDTO>(initialVendo);
-  const [inventory, setInventory] =
-    useState<InventoryOverviewDTO>(initialInventory);
   const [shift, setShift] = useState<ShiftClosingOverviewDTO>(initialShift);
   const [corrections, setCorrections] =
     useState<CorrectionRequestsOverview>(initialCorrections);
@@ -119,49 +115,59 @@ export function CashierWorkspace({
   const [correctionNotice, setCorrectionNotice] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
-  const [exitingAudit, setExitingAudit] = useState(false);
   const prevPendingCountRef = useRef(initialCorrections.pendingCount);
+
+  const isElevatedActor =
+    currentUser.role === "owner" || currentUser.role === "superadmin";
+  const maxDate = initialDate;
+  const minDate = addIsoDaysClient(initialDate, -7);
+
+  const stationOnlyQuery =
+    currentUser.role === "superadmin" && selectedStation
+      ? `?station=${encodeURIComponent(selectedStation)}`
+      : "";
 
   const schemaMissing =
     pos.schemaMissing ||
     deliveries.schemaMissing ||
     vendo.schemaMissing ||
-    inventory.schemaMissing ||
     shift.schemaMissing;
 
-  const reloadForDate = useCallback(async (targetDate: string) => {
-    setRefreshing(true);
-    try {
-      const qs = `?date=${encodeURIComponent(targetDate)}`;
-      const [posRes, delRes, venRes, invRes, shiftRes, corrRes] =
-        await Promise.all([
-          fetch(`/api/cashier/pos${qs}`, { cache: "no-store" }),
-          fetch(`/api/cashier/deliveries${qs}`, { cache: "no-store" }),
-          fetch(`/api/cashier/vendo${qs}`, { cache: "no-store" }),
-          fetch(`/api/cashier/inventory${qs}`, { cache: "no-store" }),
-          fetch(`/api/cashier/shift-closing${qs}`, { cache: "no-store" }),
-          fetch("/api/cashier/corrections", { cache: "no-store" }),
-        ]);
-
-      if (posRes.ok) setPos((await posRes.json()) as PosOverviewDTO);
-      if (delRes.ok)
-        setDeliveries((await delRes.json()) as DeliveriesOverviewDTO);
-      if (venRes.ok) setVendo((await venRes.json()) as VendoOverviewDTO);
-      if (invRes.ok)
-        setInventory((await invRes.json()) as InventoryOverviewDTO);
-      if (shiftRes.ok)
-        setShift((await shiftRes.json()) as ShiftClosingOverviewDTO);
-      if (corrRes.ok) {
-        const nextCorr = (await corrRes.json()) as CorrectionRequestsOverview;
-        prevPendingCountRef.current = nextCorr.pendingCount;
-        setCorrections(nextCorr);
+  // Consolidated single-request reload (replaces 6 separate HTTP calls)
+  const reloadWorkspace = useCallback(
+    async (targetDate: string, targetStation = selectedStation) => {
+      setRefreshing(true);
+      try {
+        const stQs =
+          currentUser.role === "superadmin" && targetStation
+            ? `&station=${encodeURIComponent(targetStation)}`
+            : "";
+        const res = await fetch(
+          `/api/cashier/workspace?date=${encodeURIComponent(targetDate)}${stQs}`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          pos: PosOverviewDTO;
+          deliveries: DeliveriesOverviewDTO;
+          vendo: VendoOverviewDTO;
+          shift: ShiftClosingOverviewDTO;
+          corrections: CorrectionRequestsOverview;
+        };
+        setPos(data.pos);
+        setDeliveries(data.deliveries);
+        setVendo(data.vendo);
+        setShift(data.shift);
+        prevPendingCountRef.current = data.corrections.pendingCount;
+        setCorrections(data.corrections);
+      } finally {
+        setRefreshing(false);
       }
-    } finally {
-      setRefreshing(false);
-    }
-  }, []);
+    },
+    [currentUser.role, selectedStation]
+  );
 
-  // Option 1 (Fast): Lightweight 3s check for Owner Review approvals while tab is visible
+  // Fast 3s poll for Owner Review approvals while tab is visible (for Cashiers with pending items)
   useEffect(() => {
     if (corrections.pendingCount === 0 && activeTab !== "reviews") return;
 
@@ -172,7 +178,7 @@ export function CashierWorkspace({
       if (document.visibilityState !== "visible" || pollBusy) return;
       pollBusy = true;
       try {
-        const res = await fetch("/api/cashier/corrections", {
+        const res = await fetch(`/api/cashier/corrections${stationOnlyQuery}`, {
           cache: "no-store",
           signal: controller.signal,
         });
@@ -182,12 +188,11 @@ export function CashierWorkspace({
         prevPendingCountRef.current = next.pendingCount;
         setCorrections(next);
 
-        // If Owner approved or rejected a pending request, refresh today's station numbers
         if (next.pendingCount < wasPending) {
           setCorrectionNotice(
-            "An Owner Supervision decision was applied. Station totals have been refreshed."
+            "An Owner review decision was applied. Station totals have been refreshed."
           );
-          await reloadForDate(businessDate);
+          await reloadWorkspace(businessDate);
         }
       } catch {
         // Ignore abort / transient errors
@@ -212,41 +217,39 @@ export function CashierWorkspace({
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", handleVisible);
     };
-  }, [activeTab, businessDate, corrections.pendingCount, reloadForDate]);
+  }, [
+    activeTab,
+    businessDate,
+    corrections.pendingCount,
+    reloadWorkspace,
+    stationOnlyQuery,
+  ]);
 
-  async function handleDateChange(nextDate: string) {
-    setBusinessDate(nextDate);
-    await reloadForDate(nextDate);
+  async function handleDateChange(rawDate: string) {
+    const safeDate = clampIsoDate(rawDate, minDate, maxDate);
+    setBusinessDate(safeDate);
+    trackAction({
+      module: "cashier",
+      action: `Changed cashier working date to ${safeDate}`,
+      controlLabel: "Date Picker",
+    });
+    await reloadWorkspace(safeDate);
   }
 
-  async function handleExitAudit() {
-    setExitingAudit(true);
-    try {
-      await fetch("/api/superadmin/elevation", { method: "DELETE" });
-      router.push("/superadmin/health");
-      router.refresh();
-    } finally {
-      setExitingAudit(false);
-    }
-  }
-
-  async function handleSwitchToOwnerLogin() {
-    setSigningOut(true);
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-      router.push("/login?mode=return-owner");
-      router.refresh();
-    } finally {
-      setSigningOut(false);
-    }
+  async function handleStationSwitch(nextStationId: string) {
+    setSelectedStation(nextStationId);
+    const chosen = stations.find((s) => s.id === nextStationId);
+    trackAction({
+      module: "navigation",
+      action: `Switched Cashier station to ${chosen?.fullName || chosen?.email || nextStationId}`,
+      controlLabel: "Station Selector",
+    });
+    await reloadWorkspace(businessDate, nextStationId);
   }
 
   async function handleSignOut() {
     setSigningOut(true);
     try {
-      if (elevation) {
-        await fetch("/api/superadmin/elevation", { method: "DELETE" });
-      }
       await fetch("/api/auth/logout", { method: "POST" });
       router.push("/login");
       router.refresh();
@@ -275,12 +278,6 @@ export function CashierWorkspace({
       badge: formatPHP(vendo.summary.todayDailyTotal),
     },
     {
-      id: "inventory",
-      label: "Gallon Inventory",
-      icon: <Package className="h-4 w-4" />,
-      badge: `${inventory.summary.currentlyBorrowedOut} out`,
-    },
-    {
       id: "shift",
       label: "Closing Shift",
       icon: <Calculator className="h-4 w-4" />,
@@ -288,7 +285,7 @@ export function CashierWorkspace({
     },
     {
       id: "reviews",
-      label: "Owner Reviews",
+      label: isElevatedActor ? "Corrections Log" : "Owner Reviews",
       icon: <ShieldCheck className="h-4 w-4" />,
       badge:
         corrections.pendingCount > 0
@@ -297,27 +294,46 @@ export function CashierWorkspace({
     },
   ];
 
+  const secondaryLinks: AppSidebarLink[] = [];
+  if (currentUser.role === "owner") {
+    secondaryLinks.push({
+      href: "/owner",
+      label: "Owner Dashboard",
+      icon: <LayoutDashboard className="h-3.5 w-3.5" />,
+    });
+  } else if (currentUser.role === "superadmin") {
+    secondaryLinks.push(
+      {
+        href: `/owner${stationOnlyQuery}`,
+        label: "Owner Dashboard",
+        icon: <LayoutDashboard className="h-3.5 w-3.5" />,
+      },
+      {
+        href: "/superadmin/health",
+        label: "Superadmin Panel",
+        icon: <Activity className="h-3.5 w-3.5" />,
+      }
+    );
+  }
+
+  const roleLabel =
+    currentUser.role === "owner"
+      ? "Owner · Cashier"
+      : currentUser.role === "superadmin"
+        ? "Superadmin · Cashier"
+        : "Cashier";
+
   const meta = TAB_TITLES[activeTab];
 
   return (
     <AppShell
-      roleLabel={currentUser.role}
+      roleLabel={roleLabel}
       pageTitle={meta.title}
       pageSubtitle={meta.subtitle}
       navItems={navItems}
       activeNavId={activeTab}
       onSelectNav={(id) => setActiveTab(id as CashierTab)}
-      secondaryAction={
-        currentUser.isOwnerCashier
-          ? {
-              label: "Switch to Owner Login",
-              sublabel: "Marked as My Account",
-              icon: <LayoutDashboard className="h-3.5 w-3.5" />,
-              onClick: () => void handleSwitchToOwnerLogin(),
-              disabled: signingOut,
-            }
-          : undefined
-      }
+      secondaryLinks={secondaryLinks}
       user={{
         name: currentUser.fullName || currentUser.role,
         email: currentUser.email,
@@ -326,21 +342,51 @@ export function CashierWorkspace({
       signingOut={signingOut}
       headerActions={
         <>
-          <label className="inline-flex items-center gap-2 rounded-full border border-[#D4D4D8] bg-white px-3.5 py-2 text-xs font-semibold text-[#111111]">
-            <Calendar className="h-3.5 w-3.5 text-[#71717A]" />
+          {currentUser.role === "superadmin" && stations.length > 1 && (
+            <label className="inline-flex items-center gap-1.5 rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3 py-2 text-xs font-semibold text-[var(--av-ink)]">
+              <Building2 className="h-3.5 w-3.5 text-[var(--av-muted)]" />
+              <select
+                value={selectedStation}
+                onChange={(e) => void handleStationSwitch(e.target.value)}
+                aria-label="Select station"
+                className="bg-transparent text-xs font-semibold text-[var(--av-ink)] focus:outline-none"
+              >
+                {stations.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.fullName || s.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          <label
+            title={`Allowed dates: ${minDate} to ${maxDate}`}
+            className="inline-flex items-center gap-2 rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3.5 py-2 text-xs font-semibold text-[var(--av-ink)]"
+          >
+            <Calendar className="h-3.5 w-3.5 text-[var(--av-muted)]" />
             <input
               type="date"
               value={businessDate}
+              min={minDate}
+              max={maxDate}
               onChange={(e) => void handleDateChange(e.target.value)}
-              className="bg-transparent text-xs font-semibold text-[#111111] tabular-nums focus:outline-none"
+              className="bg-transparent text-xs font-semibold text-[var(--av-ink)] tabular-nums focus:outline-none"
             />
           </label>
 
           <button
             type="button"
-            onClick={() => void reloadForDate(businessDate)}
+            onClick={() => {
+              trackAction({
+                module: "cashier",
+                action: "Refreshed Cashier workspace",
+                controlLabel: "Refresh",
+              });
+              void reloadWorkspace(businessDate);
+            }}
             disabled={refreshing}
-            className="inline-flex items-center gap-1.5 rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold text-white transition hover:bg-black/85 disabled:opacity-50"
+            className="av-btn-primary inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition disabled:opacity-50"
           >
             <RefreshCw
               className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
@@ -350,7 +396,7 @@ export function CashierWorkspace({
         </>
       }
       topBanner={
-        (elevation || schemaMissing || correctionNotice) && (
+        (schemaMissing || correctionNotice) && (
           <div className="space-y-3">
             {correctionNotice && (
               <NoticeBanner
@@ -359,34 +405,10 @@ export function CashierWorkspace({
                 onDismiss={() => setCorrectionNotice(null)}
               />
             )}
-            {elevation && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[#111111] px-5 py-3.5 text-xs text-white">
-                <div>
-                  <span className="font-bold uppercase tracking-wider">
-                    Superadmin Audit Mode
-                  </span>{" "}
-                  · {elevation.targetOwnerLabel} · Reason:{" "}
-                  <span className="text-white/80">{elevation.reason}</span> ·
-                  Expires{" "}
-                  <span className="tabular-nums">
-                    {new Date(elevation.expiresAt).toLocaleTimeString()}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleExitAudit}
-                  disabled={exitingAudit}
-                  className="rounded-full bg-white px-4 py-1.5 text-xs font-semibold text-[#111111] transition hover:bg-[#EFEFF2] disabled:opacity-50"
-                >
-                  {exitingAudit ? "Exiting..." : "Exit Audit"}
-                </button>
-              </div>
-            )}
-
             {schemaMissing && (
               <NoticeBanner
                 tone="info"
-                message="Some database tables or columns are not applied yet. Run the latest SQL in backend/db/schema.sql in Supabase SQL Editor, then click Refresh."
+                message="Some station records are still being set up. Please contact your system administrator."
               />
             )}
           </div>
@@ -398,7 +420,9 @@ export function CashierWorkspace({
           pos={pos}
           customers={deliveries.customers}
           businessDate={businessDate}
-          onDataChanged={() => reloadForDate(businessDate)}
+          stationQuery={stationOnlyQuery}
+          isElevatedActor={isElevatedActor}
+          onDataChanged={() => reloadWorkspace(businessDate)}
           onRequestCorrection={setModalTarget}
         />
       )}
@@ -407,7 +431,9 @@ export function CashierWorkspace({
         <DeliveriesTab
           data={deliveries}
           businessDate={businessDate}
-          onDataChanged={() => reloadForDate(businessDate)}
+          stationQuery={stationOnlyQuery}
+          isElevatedActor={isElevatedActor}
+          onDataChanged={() => reloadWorkspace(businessDate)}
           onRequestCorrection={setModalTarget}
         />
       )}
@@ -416,16 +442,11 @@ export function CashierWorkspace({
         <VendoTab
           data={vendo}
           businessDate={businessDate}
-          onDataChanged={() => reloadForDate(businessDate)}
+          todayDate={initialDate}
+          stationQuery={stationOnlyQuery}
+          isElevatedActor={isElevatedActor}
+          onDataChanged={() => reloadWorkspace(businessDate)}
           onRequestCorrection={setModalTarget}
-        />
-      )}
-
-      {activeTab === "inventory" && (
-        <InventoryTab
-          data={inventory}
-          businessDate={businessDate}
-          onDataChanged={() => reloadForDate(businessDate)}
         />
       )}
 
@@ -433,7 +454,9 @@ export function CashierWorkspace({
         <ShiftClosingTab
           data={shift}
           businessDate={businessDate}
-          onDataChanged={() => reloadForDate(businessDate)}
+          stationQuery={stationOnlyQuery}
+          isElevatedActor={isElevatedActor}
+          onDataChanged={() => reloadWorkspace(businessDate)}
           onRequestCorrection={setModalTarget}
         />
       )}
@@ -443,12 +466,16 @@ export function CashierWorkspace({
       {modalTarget && (
         <CorrectionRequestModal
           target={modalTarget}
+          stationQuery={stationOnlyQuery}
+          isElevatedActor={isElevatedActor}
           onClose={() => setModalTarget(null)}
-          onSubmitted={async () => {
+          onSubmitted={async (appliedDirectly) => {
             setCorrectionNotice(
-              `Sent "${modalTarget.entityLabel}" to Station Owner for supervision approval.`
+              appliedDirectly
+                ? `Applied correction to "${modalTarget.entityLabel}" and recorded it in the audit trail.`
+                : `Sent "${modalTarget.entityLabel}" to Station Owner for review.`
             );
-            await reloadForDate(businessDate);
+            await reloadWorkspace(businessDate);
           }}
         />
       )}

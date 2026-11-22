@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { handleApiError } from "@/backend/lib/http";
+import { extractRequestMeta, handleApiError } from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import {
   formatAuditLedgerExport,
   queryOwnerAuditLedger,
@@ -18,8 +19,10 @@ const VALID_BUCKETS = new Set<AuditBucketFilter>([
 
 export async function GET(request: Request) {
   try {
-    const owner = await requireOwnerAccess();
     const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
     const rawBucket = searchParams.get("bucket") ?? "all";
     const bucket: AuditBucketFilter = VALID_BUCKETS.has(
       rawBucket as AuditBucketFilter
@@ -30,13 +33,30 @@ export async function GET(request: Request) {
     const format: "csv" | "json" | "txt" =
       rawFormat === "json" ? "json" : rawFormat === "txt" ? "txt" : "csv";
 
-    const ledger = await queryOwnerAuditLedger(owner.id, {
+    const ledger = await queryOwnerAuditLedger(tenantOwnerId, {
       from: searchParams.get("from"),
       to: searchParams.get("to"),
       module: searchParams.get("module"),
       bucket,
       q: searchParams.get("q"),
       limit: 1000,
+    });
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "export",
+      action: `Exported Financial Audit Trail (${format.toUpperCase()})`,
+      controlLabel: `Export ${format.toUpperCase()}`,
+      targetLabel: `${ledger.fromDate} to ${ledger.toDate}`,
+      route: "/api/owner/audit/export",
+      ...meta,
     });
 
     const report = formatAuditLedgerExport(ledger, format);

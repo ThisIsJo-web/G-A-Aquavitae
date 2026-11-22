@@ -50,20 +50,28 @@ export async function createSupabaseServerClient() {
   });
 }
 
+let cachedAdminClient: ReturnType<typeof createClient<Database>> | null = null;
+
 /**
  * Privileged server-only Supabase admin client using the secret key.
- * BYPASSES Row Level Security (RLS) — use strictly for trusted backend jobs
- * and administrative operations. Never expose its responses blindly.
+ * Cached as a module-level singleton to eliminate repeated client setup overhead.
+ * BYPASSES Row Level Security (RLS) — use strictly for trusted backend operations.
  */
 export function createSupabaseAdminClient() {
+  if (cachedAdminClient) {
+    return cachedAdminClient;
+  }
+
   const { url, secretKey } = getSupabaseEnv();
 
-  return createClient<Database>(url, secretKey, {
+  cachedAdminClient = createClient<Database>(url, secretKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
     },
   });
+
+  return cachedAdminClient;
 }
 
 export interface DatabaseConnectionStatus {

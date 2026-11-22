@@ -8,11 +8,13 @@ import {
 
 export async function GET(request: Request) {
   try {
-    const owner = await requireOwnerAccess();
     const { searchParams } = new URL(request.url);
+    const { tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
     const rangeDays = sanitizeRangeDays(searchParams.get("range"));
 
-    const snapshot = await getOwnerDashboardSnapshot(owner.id, rangeDays);
+    const snapshot = await getOwnerDashboardSnapshot(tenantOwnerId, rangeDays);
 
     return NextResponse.json(snapshot, {
       status: 200,

@@ -11,6 +11,14 @@ import {
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import {
+  handleDecimalKeyDown,
+  handleIntegerKeyDown,
+  handlePhoneKeyDown,
+  sanitizeDecimalInput,
+  sanitizeIntegerInput,
+  sanitizePhoneInput,
+} from "@/app/_components/ui/input-validation";
+import {
   EmptyState,
   NoticeBanner,
   RowActionMenu,
@@ -30,6 +38,8 @@ import {
 interface DeliveriesTabProps {
   data: DeliveriesOverviewDTO;
   businessDate: string;
+  stationQuery: string;
+  isElevatedActor: boolean;
   onDataChanged: () => Promise<void> | void;
   onRequestCorrection: (target: CorrectionModalTarget) => void;
 }
@@ -37,29 +47,31 @@ interface DeliveriesTabProps {
 export function DeliveriesTab({
   data,
   businessDate,
+  stationQuery,
+  isElevatedActor,
   onDataChanged,
   onRequestCorrection,
 }: DeliveriesTabProps) {
   const activeCustomers = data.customers.filter((c) => c.is_active);
 
-  // Add Regular Customer Form
+  // Add Regular Customer Form (placeholder-only, no pre-filled values)
   const [newCustName, setNewCustName] = useState("");
   const [newCustArea, setNewCustArea] = useState("");
   const [newCustPhone, setNewCustPhone] = useState("");
-  const [newCustPrice, setNewCustPrice] = useState("20");
+  const [newCustPrice, setNewCustPrice] = useState("");
   const [addingCustomer, setAddingCustomer] = useState(false);
 
-  // Record Delivery Form
+  // Record Delivery Form (placeholder-only, no pre-filled values)
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [destination, setDestination] = useState("");
   const [orderType, setOrderType] = useState<DeliveryOrderType>("refill");
-  const [quantity, setQuantity] = useState("1");
-  const [emptyReturned, setEmptyReturned] = useState("1");
+  const [quantity, setQuantity] = useState("");
+  const [emptyReturned, setEmptyReturned] = useState("");
   const [emptyTouched, setEmptyTouched] = useState(false);
-  const [unitPrice, setUnitPrice] = useState("20");
-  const [deliveryFee, setDeliveryFee] = useState("0");
+  const [unitPrice, setUnitPrice] = useState("");
+  const [deliveryFee, setDeliveryFee] = useState("");
   const [paymentMethod, setPaymentMethod] =
     useState<DeliveryPaymentMethod>("cash");
   const [paymentStatus, setPaymentStatus] =
@@ -78,7 +90,10 @@ export function DeliveriesTab({
   const [success, setSuccess] = useState<string | null>(null);
 
   const qtyNum = Math.max(0, Math.floor(Number(quantity) || 0));
-  const emptyNum = Math.max(0, Math.floor(Number(emptyReturned) || 0));
+  const emptyNum =
+    emptyReturned === "" && !emptyTouched && orderType === "refill"
+      ? qtyNum
+      : Math.max(0, Math.floor(Number(emptyReturned) || 0));
   const unitPriceNum = Math.max(0, Number(unitPrice) || 0);
   const feeNum = Math.max(0, Number(deliveryFee) || 0);
   const computedTotal = qtyNum * unitPriceNum + feeNum;
@@ -103,16 +118,15 @@ export function DeliveriesTab({
     setOrderType(type);
     setUnitPrice(String(price));
     if (type === "gallon_with_water" && !emptyTouched) {
-      setEmptyReturned("0");
-    } else if (type === "refill" && !emptyTouched) {
-      setEmptyReturned(quantity);
+      setEmptyReturned("");
     }
   }
 
-  function handleQuantityChange(val: string) {
-    setQuantity(val);
+  function handleQuantityChange(raw: string) {
+    const clean = sanitizeIntegerInput(raw);
+    setQuantity(clean);
     if (!emptyTouched && orderType === "refill") {
-      setEmptyReturned(val);
+      setEmptyReturned(clean);
     }
   }
 
@@ -131,14 +145,14 @@ export function DeliveriesTab({
     setError(null);
     setSuccess(null);
     try {
-      const res = await fetch("/api/cashier/customers", {
+      const res = await fetch(`/api/cashier/customers${stationQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerName: newCustName,
           area: newCustArea,
           phone: newCustPhone || undefined,
-          defaultUnitPrice: Number(newCustPrice) || 20,
+          defaultUnitPrice: newCustPrice ? Number(newCustPrice) : 20,
         }),
       });
       const payload = (await res.json()) as {
@@ -153,7 +167,7 @@ export function DeliveriesTab({
       setNewCustName("");
       setNewCustArea("");
       setNewCustPhone("");
-      setNewCustPrice("20");
+      setNewCustPrice("");
       setSuccess(`Saved regular customer: ${payload.customer.customer_name}.`);
       await Promise.resolve(onDataChanged());
     } finally {
@@ -163,12 +177,21 @@ export function DeliveriesTab({
 
   async function handleCreateDelivery(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (qtyNum <= 0) {
+      setError("Enter the number of gallons delivered (at least 1).");
+      return;
+    }
+    if (!unitPrice.trim()) {
+      setError("Select or enter the price per gallon.");
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     setSuccess(null);
 
     try {
-      const res = await fetch("/api/cashier/deliveries", {
+      const res = await fetch(`/api/cashier/deliveries${stationQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -203,11 +226,11 @@ export function DeliveriesTab({
       setCustomerPhone("");
       setDestination("");
       setOrderType("refill");
-      setQuantity("1");
-      setEmptyReturned("1");
+      setQuantity("");
+      setEmptyReturned("");
       setEmptyTouched(false);
-      setUnitPrice("20");
-      setDeliveryFee("0");
+      setUnitPrice("");
+      setDeliveryFee("");
       setDeliveredBy("");
       setNotes("");
       setSaveAsRegular(false);
@@ -228,7 +251,7 @@ export function DeliveriesTab({
     setUpdatingId(id);
     setError(null);
     try {
-      const res = await fetch(`/api/cashier/deliveries/${id}`, {
+      const res = await fetch(`/api/cashier/deliveries/${id}${stationQuery}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -272,7 +295,7 @@ export function DeliveriesTab({
         />
       )}
 
-      {/* Quick Stats Row (1 Solid Black Card) */}
+      {/* Quick Stats Row */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <QuickStatCard
           highlighted
@@ -315,10 +338,10 @@ export function DeliveriesTab({
         >
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
-              <h2 className="text-base font-bold text-[#111111]">
+              <h2 className="text-base font-bold text-[var(--av-ink)]">
                 Record Delivery
               </h2>
-              <p className="text-xs font-normal text-[#71717A]">
+              <p className="text-xs font-normal text-[var(--av-muted)]">
                 Log gallons delivered, empty gallons returned, and area price.
               </p>
             </div>
@@ -326,7 +349,7 @@ export function DeliveriesTab({
               <button
                 type="button"
                 onClick={() => applyCustomerToForm(null)}
-                className="text-xs font-semibold text-[#71717A] underline hover:text-[#111111]"
+                className="text-xs font-semibold text-[var(--av-muted)] underline hover:text-[var(--av-ink)]"
               >
                 Clear customer
               </button>
@@ -335,7 +358,7 @@ export function DeliveriesTab({
 
           {activeCustomers.length > 0 && (
             <div>
-              <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
                 Regular Customer (Optional)
               </label>
               <select
@@ -346,7 +369,7 @@ export function DeliveriesTab({
                     null;
                   applyCustomerToForm(found);
                 }}
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-sm font-medium text-[#111111] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input w-full rounded-2xl px-4 py-2.5 text-sm font-medium"
               >
                 <option value="">New / One-time customer...</option>
                 {activeCustomers.map((c) => (
@@ -361,7 +384,7 @@ export function DeliveriesTab({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
                 Customer Name
               </label>
               <input
@@ -370,12 +393,12 @@ export function DeliveriesTab({
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
                 placeholder="e.g. Ate Linda"
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-sm text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input w-full rounded-2xl px-4 py-2.5 text-sm"
               />
             </div>
 
             <div>
-              <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
                 Area / Address
               </label>
               <input
@@ -384,14 +407,14 @@ export function DeliveriesTab({
                 value={destination}
                 onChange={(e) => setDestination(e.target.value)}
                 placeholder="e.g. Tagum"
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-sm text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input w-full rounded-2xl px-4 py-2.5 text-sm"
               />
             </div>
           </div>
 
           {/* Quick-tap Area Pricing */}
           <div>
-            <label className="mb-2 block text-xs font-semibold text-[#111111]">
+            <label className="mb-2 block text-xs font-semibold text-[var(--av-ink)]">
               Price per Gallon
             </label>
             <div className="flex flex-wrap items-center gap-2">
@@ -399,9 +422,9 @@ export function DeliveriesTab({
                 type="button"
                 onClick={() => handleQuickPrice(20, "refill")}
                 className={`rounded-full border px-4 py-2 text-xs font-semibold transition ${
-                  orderType === "refill" && unitPriceNum === 20
-                    ? "border-[#111111] bg-[#111111] text-white"
-                    : "border-[#D4D4D8] bg-white text-[#111111] hover:bg-[#F4F4F6]"
+                  orderType === "refill" && unitPrice === "20"
+                    ? "border-[var(--av-accent)] bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                    : "border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink)] hover:bg-[var(--av-surface-subtle)]"
                 }`}
               >
                 ₱20 · Refill
@@ -410,9 +433,9 @@ export function DeliveriesTab({
                 type="button"
                 onClick={() => handleQuickPrice(25, "refill")}
                 className={`rounded-full border px-4 py-2 text-xs font-semibold transition ${
-                  orderType === "refill" && unitPriceNum === 25
-                    ? "border-[#111111] bg-[#111111] text-white"
-                    : "border-[#D4D4D8] bg-white text-[#111111] hover:bg-[#F4F4F6]"
+                  orderType === "refill" && unitPrice === "25"
+                    ? "border-[var(--av-accent)] bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                    : "border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink)] hover:bg-[var(--av-surface-subtle)]"
                 }`}
               >
                 ₱25 · Farther Area
@@ -422,111 +445,126 @@ export function DeliveriesTab({
                 onClick={() => handleQuickPrice(160, "gallon_with_water")}
                 className={`rounded-full border px-4 py-2 text-xs font-semibold transition ${
                   orderType === "gallon_with_water"
-                    ? "border-[#111111] bg-[#111111] text-white"
-                    : "border-[#D4D4D8] bg-white text-[#111111] hover:bg-[#F4F4F6]"
+                    ? "border-[var(--av-accent)] bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                    : "border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink)] hover:bg-[var(--av-surface-subtle)]"
                 }`}
               >
                 ₱160 · Filled Gallon
               </button>
 
               <div className="ml-auto flex items-center gap-1.5">
-                <span className="text-xs font-semibold text-[#71717A]">₱</span>
+                <span className="text-xs font-semibold text-[var(--av-muted)]">
+                  ₱
+                </span>
                 <input
-                  type="number"
-                  min={0}
-                  step="1"
+                  type="text"
+                  inputMode="decimal"
                   required
                   value={unitPrice}
-                  onChange={(e) => setUnitPrice(e.target.value)}
+                  onKeyDown={handleDecimalKeyDown}
+                  onChange={(e) =>
+                    setUnitPrice(sanitizeDecimalInput(e.target.value))
+                  }
+                  placeholder="e.g. 20"
                   aria-label="Custom price per gallon"
-                  className="w-20 rounded-full border border-[#E4E4E7] bg-[#F8F8FA] px-3 py-1.5 text-center text-xs font-bold text-[#111111] tabular-nums focus:border-[#111111] focus:bg-white focus:outline-none"
+                  className="av-input w-24 rounded-full px-3 py-1.5 text-center text-xs font-bold tabular-nums"
                 />
               </div>
             </div>
           </div>
 
           {/* Gallon In & Out */}
-          <div className="rounded-2xl bg-[#F7F7F9] p-4">
+          <div className="rounded-2xl bg-[var(--av-surface-subtle)] p-4">
             <div className="grid gap-3 sm:grid-cols-3">
               <div>
-                <label className="mb-1 block text-xs font-semibold text-[#111111]">
+                <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                   Gallons Out
                 </label>
                 <input
-                  type="number"
-                  min={1}
+                  type="text"
+                  inputMode="numeric"
                   required
                   value={quantity}
+                  onKeyDown={(e) => handleIntegerKeyDown(e, false)}
                   onChange={(e) => handleQuantityChange(e.target.value)}
-                  className="w-full rounded-2xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm font-bold text-[#111111] tabular-nums"
+                  placeholder="e.g. 5"
+                  className="av-input w-full rounded-2xl bg-[var(--av-surface)] px-3 py-2 text-sm font-bold tabular-nums"
                 />
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-semibold text-[#111111]">
+                <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                   Empties Returned (In)
                 </label>
                 <input
-                  type="number"
-                  min={0}
-                  required
+                  type="text"
+                  inputMode="numeric"
                   value={emptyReturned}
+                  onKeyDown={(e) => handleIntegerKeyDown(e, false)}
                   onChange={(e) => {
                     setEmptyTouched(true);
-                    setEmptyReturned(e.target.value);
+                    setEmptyReturned(sanitizeIntegerInput(e.target.value));
                   }}
-                  className="w-full rounded-2xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm font-bold text-[#111111] tabular-nums"
+                  placeholder={orderType === "refill" ? "Same as out" : "e.g. 0"}
+                  className="av-input w-full rounded-2xl bg-[var(--av-surface)] px-3 py-2 text-sm font-bold tabular-nums"
                 />
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-semibold text-[#111111]">
+                <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                   Extra Fee (₱)
                 </label>
                 <input
-                  type="number"
-                  min={0}
-                  step="1"
+                  type="text"
+                  inputMode="decimal"
                   value={deliveryFee}
-                  onChange={(e) => setDeliveryFee(e.target.value)}
-                  className="w-full rounded-2xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm font-bold text-[#111111] tabular-nums"
+                  onKeyDown={handleDecimalKeyDown}
+                  onChange={(e) =>
+                    setDeliveryFee(sanitizeDecimalInput(e.target.value))
+                  }
+                  placeholder="e.g. 0"
+                  className="av-input w-full rounded-2xl bg-[var(--av-surface)] px-3 py-2 text-sm font-bold tabular-nums"
                 />
               </div>
             </div>
 
-            <div className="mt-3 text-xs font-medium text-[#52525B]">
-              {orderType === "gallon_with_water" ? (
-                <>
-                  Selling {qtyNum} filled gallon(s) — station stock decreases by{" "}
-                  <strong className="text-[#111111]">{qtyNum}</strong>
-                  {emptyNum > 0 ? ` (+${emptyNum} empty returned)` : ""}.
-                </>
-              ) : netGallonDiff === 0 ? (
-                <>
-                  Exact swap ({qtyNum} out / {emptyNum} empty in) — no borrowed
-                  gallons.
-                </>
-              ) : netGallonDiff < 0 ? (
-                <>
-                  <strong className="text-[#111111]">
-                    {Math.abs(netGallonDiff)} gallon(s)
-                  </strong>{" "}
-                  will be added to Borrowed under{" "}
-                  {customerName || "this customer"}.
-                </>
-              ) : (
-                <>
-                  <strong className="text-[#111111]">+{netGallonDiff}</strong>{" "}
-                  extra empty gallon(s) returned — restores station stock &amp;
-                  reduces borrowed balance.
-                </>
-              )}
-            </div>
+            {qtyNum > 0 && (
+              <div className="mt-3 text-xs font-medium text-[var(--av-ink-secondary)]">
+                {orderType === "gallon_with_water" ? (
+                  <>
+                    Selling {qtyNum} filled gallon(s) — station stock decreases by{" "}
+                    <strong className="text-[var(--av-ink)]">{qtyNum}</strong>
+                    {emptyNum > 0 ? ` (+${emptyNum} empty returned)` : ""}.
+                  </>
+                ) : netGallonDiff === 0 ? (
+                  <>
+                    Exact swap ({qtyNum} out / {emptyNum} empty in) — no borrowed
+                    gallons.
+                  </>
+                ) : netGallonDiff < 0 ? (
+                  <>
+                    <strong className="text-[var(--av-ink)]">
+                      {Math.abs(netGallonDiff)} gallon(s)
+                    </strong>{" "}
+                    will be added to Borrowed under{" "}
+                    {customerName || "this customer"}.
+                  </>
+                ) : (
+                  <>
+                    <strong className="text-[var(--av-ink)]">
+                      +{netGallonDiff}
+                    </strong>{" "}
+                    extra empty gallon(s) returned — restores station stock &amp;
+                    reduces borrowed balance.
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="grid gap-3 sm:grid-cols-3">
             <div>
-              <label className="mb-1 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                 Payment
               </label>
               <select
@@ -534,7 +572,7 @@ export function DeliveriesTab({
                 onChange={(e) =>
                   setPaymentMethod(e.target.value as DeliveryPaymentMethod)
                 }
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3 py-2.5 text-xs font-semibold text-[#111111]"
+                className="av-input w-full rounded-2xl px-3 py-2.5 text-xs font-semibold"
               >
                 <option value="cash">Cash</option>
                 <option value="gcash">GCash</option>
@@ -543,7 +581,7 @@ export function DeliveriesTab({
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
                 Status
               </label>
               <select
@@ -551,7 +589,7 @@ export function DeliveriesTab({
                 onChange={(e) =>
                   setPaymentStatus(e.target.value as DeliveryPaymentStatus)
                 }
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3 py-2.5 text-xs font-semibold text-[#111111]"
+                className="av-input w-full rounded-2xl px-3 py-2.5 text-xs font-semibold"
               >
                 <option value="paid">Paid</option>
                 <option value="unpaid">Unpaid</option>
@@ -559,53 +597,57 @@ export function DeliveriesTab({
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-semibold text-[#111111]">
-                Delivered By (Ref)
+              <label className="mb-1 block text-xs font-semibold text-[var(--av-ink)]">
+                Delivered By
               </label>
               <input
                 type="text"
                 value={deliveredBy}
                 onChange={(e) => setDeliveredBy(e.target.value)}
-                placeholder="Optional name"
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3 py-2.5 text-xs text-[#111111]"
+                placeholder="Rider name (optional)"
+                className="av-input w-full rounded-2xl px-3 py-2.5 text-xs"
               />
             </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <input
-              type="text"
+              type="tel"
+              inputMode="tel"
               value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value)}
-              placeholder="Customer phone (optional)"
-              className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs text-[#111111]"
+              onKeyDown={handlePhoneKeyDown}
+              onChange={(e) =>
+                setCustomerPhone(sanitizePhoneInput(e.target.value))
+              }
+              placeholder="Phone number (optional)"
+              className="av-input rounded-2xl px-3.5 py-2.5 text-xs"
             />
             <input
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder="Landmark / note (optional)"
-              className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs text-[#111111]"
+              className="av-input rounded-2xl px-3.5 py-2.5 text-xs"
             />
           </div>
 
           {!selectedCustomerId && (
-            <label className="inline-flex items-center gap-2 text-xs font-medium text-[#52525B]">
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-[var(--av-ink-secondary)]">
               <input
                 type="checkbox"
                 checked={saveAsRegular}
                 onChange={(e) => setSaveAsRegular(e.target.checked)}
-                className="h-4 w-4 rounded border-[#D4D4D8] accent-[#111111]"
+                className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
               />
               <span>Save as regular delivery customer</span>
             </label>
           )}
 
-          <div className="flex items-center justify-between rounded-2xl bg-[#F7F7F9] px-5 py-3.5">
-            <span className="text-xs font-semibold text-[#71717A]">
+          <div className="flex items-center justify-between rounded-2xl bg-[var(--av-surface-subtle)] px-5 py-3.5">
+            <span className="text-xs font-semibold text-[var(--av-muted)]">
               Delivery Total
             </span>
-            <span className="text-xl font-bold text-[#111111] tabular-nums">
+            <span className="text-xl font-bold text-[var(--av-ink)] tabular-nums">
               {formatPHP(computedTotal)}
             </span>
           </div>
@@ -613,7 +655,7 @@ export function DeliveriesTab({
           <button
             type="submit"
             disabled={submitting || data.schemaMissing}
-            className="w-full rounded-full bg-[#111111] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-black/85 disabled:opacity-40"
+            className="av-btn-primary w-full rounded-full px-6 py-3.5 text-sm font-semibold transition disabled:opacity-40"
           >
             {submitting
               ? "Saving..."
@@ -624,14 +666,14 @@ export function DeliveriesTab({
         {/* Right: Regular Delivery Customers */}
         <div className="av-card flex flex-col p-6 lg:col-span-5">
           <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F2F2F4] text-[#111111]">
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--av-surface-subtle)] text-[var(--av-ink)]">
               <Users className="h-4 w-4" />
             </span>
             <div>
-              <h3 className="text-base font-bold text-[#111111]">
+              <h3 className="text-base font-bold text-[var(--av-ink)]">
                 Regular Customers ({activeCustomers.length})
               </h3>
-              <p className="text-xs font-normal text-[#71717A]">
+              <p className="text-xs font-normal text-[var(--av-muted)]">
                 Area rate &amp; station gallon balance per customer.
               </p>
             </div>
@@ -645,7 +687,7 @@ export function DeliveriesTab({
                 value={newCustName}
                 onChange={(e) => setNewCustName(e.target.value)}
                 placeholder="Customer name"
-                className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-xs text-[#111111] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input rounded-2xl px-3.5 py-2 text-xs"
               />
               <input
                 type="text"
@@ -653,17 +695,21 @@ export function DeliveriesTab({
                 value={newCustArea}
                 onChange={(e) => setNewCustArea(e.target.value)}
                 placeholder="Area (e.g. Tagum)"
-                className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-xs text-[#111111] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input rounded-2xl px-3.5 py-2 text-xs"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <input
-                type="text"
+                type="tel"
+                inputMode="tel"
                 value={newCustPhone}
-                onChange={(e) => setNewCustPhone(e.target.value)}
+                onKeyDown={handlePhoneKeyDown}
+                onChange={(e) =>
+                  setNewCustPhone(sanitizePhoneInput(e.target.value))
+                }
                 placeholder="Phone (optional)"
-                className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-xs text-[#111111] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input rounded-2xl px-3.5 py-2 text-xs"
               />
               <div className="flex items-center gap-1">
                 {["20", "25"].map((p) => (
@@ -673,21 +719,24 @@ export function DeliveriesTab({
                     onClick={() => setNewCustPrice(p)}
                     className={`rounded-full border px-2.5 py-1.5 text-xs font-semibold tabular-nums ${
                       newCustPrice === p
-                        ? "border-[#111111] bg-[#111111] text-white"
-                        : "border-[#D4D4D8] bg-white text-[#111111]"
+                        ? "border-[var(--av-accent)] bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                        : "border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink)]"
                     }`}
                   >
                     ₱{p}
                   </button>
                 ))}
                 <input
-                  type="number"
-                  min={0}
-                  step="1"
+                  type="text"
+                  inputMode="decimal"
                   value={newCustPrice}
-                  onChange={(e) => setNewCustPrice(e.target.value)}
+                  onKeyDown={handleDecimalKeyDown}
+                  onChange={(e) =>
+                    setNewCustPrice(sanitizeDecimalInput(e.target.value))
+                  }
+                  placeholder="₱ Rate"
                   aria-label="Default customer price"
-                  className="w-full rounded-full border border-[#E4E4E7] bg-[#F8F8FA] px-2.5 py-1.5 text-center text-xs font-semibold text-[#111111] tabular-nums"
+                  className="av-input w-full rounded-full px-2.5 py-1.5 text-center text-xs font-semibold tabular-nums"
                 />
               </div>
             </div>
@@ -695,7 +744,7 @@ export function DeliveriesTab({
             <button
               type="submit"
               disabled={addingCustomer || data.schemaMissing}
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded-full border border-[#D4D4D8] bg-white px-4 py-2.5 text-xs font-semibold text-[#111111] transition hover:border-[#111111] hover:bg-[#111111] hover:text-white disabled:opacity-40"
+              className="av-btn-outline inline-flex w-full items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-xs font-semibold transition disabled:opacity-40"
             >
               <UserPlus className="h-3.5 w-3.5" />
               {addingCustomer ? "Saving..." : "Add Regular Customer"}
@@ -704,13 +753,13 @@ export function DeliveriesTab({
 
           {activeCustomers.length > 0 && (
             <div className="relative mt-4">
-              <Search className="pointer-events-none absolute top-1/2 left-3.5 h-3.5 w-3.5 -translate-y-1/2 text-[#A1A1AA]" />
+              <Search className="pointer-events-none absolute top-1/2 left-3.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--av-subtle)]" />
               <input
                 type="search"
                 value={customerSearch}
                 onChange={(e) => setCustomerSearch(e.target.value)}
                 placeholder="Search customer or area..."
-                className="w-full rounded-full border border-[#E4E4E7] bg-[#F8F8FA] py-2 pr-3.5 pl-9 text-xs text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input w-full rounded-full py-2 pr-3.5 pl-9 text-xs"
               />
             </div>
           )}
@@ -726,15 +775,15 @@ export function DeliveriesTab({
               filteredCustomers.map((c) => (
                 <div
                   key={c.id}
-                  className="flex items-center justify-between gap-2 rounded-2xl bg-[#F7F7F9] px-3.5 py-3 text-xs transition hover:bg-[#F0F0F3]"
+                  className="flex items-center justify-between gap-2 rounded-2xl bg-[var(--av-surface-subtle)] px-3.5 py-3 text-xs transition hover:bg-[var(--av-surface-hover)]"
                 >
                   <div className="min-w-0">
-                    <div className="truncate font-bold text-[#111111]">
+                    <div className="truncate font-bold text-[var(--av-ink)]">
                       {c.customer_name}
                     </div>
-                    <div className="text-[11px] font-normal text-[#71717A]">
+                    <div className="text-[11px] font-normal text-[var(--av-muted)]">
                       {c.area} ·{" "}
-                      <span className="font-semibold text-[#111111] tabular-nums">
+                      <span className="font-semibold text-[var(--av-ink)] tabular-nums">
                         ₱{c.default_unit_price}
                       </span>
                       {c.phone ? ` · ${c.phone}` : ""}
@@ -748,7 +797,7 @@ export function DeliveriesTab({
                     <button
                       type="button"
                       onClick={() => applyCustomerToForm(c)}
-                      className="rounded-full border border-[#D4D4D8] bg-white px-3 py-1 text-[11px] font-semibold text-[#111111] transition hover:border-[#111111] hover:bg-[#111111] hover:text-white"
+                      className="av-btn-outline rounded-full px-3 py-1 text-[11px] font-semibold transition"
                     >
                       Deliver
                     </button>
@@ -760,14 +809,14 @@ export function DeliveriesTab({
         </div>
       </div>
 
-      {/* Rounded-Row Deliveries Table */}
+      {/* Deliveries Table */}
       <div className="av-card p-6">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 className="text-base font-bold text-[#111111]">
+            <h3 className="text-base font-bold text-[var(--av-ink)]">
               Deliveries ({data.deliveries.length})
             </h3>
-            <p className="text-xs font-normal text-[#71717A]">
+            <p className="text-xs font-normal text-[var(--av-muted)]">
               {businessDate} · Cash {formatPHP(data.summary.paidCashTotal)} ·
               GCash {formatPHP(data.summary.paidDigitalTotal)} · Unpaid{" "}
               {formatPHP(data.summary.unpaidTotal)}
@@ -791,7 +840,7 @@ export function DeliveriesTab({
           ) : (
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
-                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
+                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                   <th className="w-8 pb-1 pl-3" />
                   <th className="px-3 pb-1">Customer &amp; Area</th>
                   <th className="px-3 pb-1">Gallons Out / In</th>
@@ -803,13 +852,11 @@ export function DeliveriesTab({
               </thead>
               <tbody>
                 {data.deliveries.map((d) => {
-                  const busy = updatingId === d.id;
                   const isCancelled = d.delivery_status === "cancelled";
-
                   return (
                     <tr
                       key={d.id}
-                      className={`rounded-2xl bg-[#F7F7F9] font-medium transition hover:bg-[#F0F0F3] ${
+                      className={`rounded-2xl bg-[var(--av-surface-subtle)] font-medium transition hover:bg-[var(--av-surface-hover)] ${
                         isCancelled ? "opacity-55" : ""
                       }`}
                     >
@@ -819,86 +866,70 @@ export function DeliveriesTab({
                           checked={selectedDeliveries.has(d.id)}
                           onChange={() => toggleSelectDelivery(d.id)}
                           aria-label={`Select delivery for ${d.customer_name}`}
-                          className="h-4 w-4 rounded border-[#D4D4D8] accent-[#111111]"
+                          className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
                         />
                       </td>
-
                       <td className="px-3 py-3">
-                        <div className="font-bold text-[#111111]">
+                        <div className="font-bold text-[var(--av-ink)]">
                           {d.customer_name}
                         </div>
-                        <div className="text-[11px] font-normal text-[#71717A]">
+                        <div className="text-[11px] font-normal text-[var(--av-muted)]">
                           {d.destination}
                           {d.customer_phone ? ` · ${d.customer_phone}` : ""}
                         </div>
                       </td>
-
-                      <td className="px-3 py-3">
-                        <div className="font-semibold text-[#111111] tabular-nums">
-                          {d.quantity} Out · {d.empty_gallons_returned} In
+                      <td className="px-3 py-3 tabular-nums">
+                        <div className="font-bold text-[var(--av-ink)]">
+                          {d.quantity} out / {d.empty_gallons_returned} in
                         </div>
-                        <div className="text-[11px] font-normal text-[#71717A]">
+                        <div className="text-[11px] text-[var(--av-muted)]">
                           {d.order_type === "gallon_with_water"
                             ? "Filled Gallon"
-                            : "Refill"}
-                          {d.borrowed_gallons_count > 0
-                            ? ` · ${d.borrowed_gallons_count} borrowed`
-                            : ""}
+                            : "Refill"}{" "}
+                          · ₱{d.unit_price}/gal
                         </div>
                       </td>
-
+                      <td className="px-3 py-3 font-bold text-[var(--av-ink)] tabular-nums">
+                        {formatPHP(d.total_amount)}
+                        <div className="text-[11px] font-normal uppercase text-[var(--av-muted)]">
+                          {d.payment_method === "credit"
+                            ? "Utang"
+                            : d.payment_method}
+                        </div>
+                      </td>
                       <td className="px-3 py-3">
-                        <div className="font-bold text-[#111111] tabular-nums">
-                          {formatPHP(d.total_amount)}
-                        </div>
-                        <div className="text-[11px] font-normal text-[#71717A] tabular-nums">
-                          {formatPHP(d.unit_price)}/gal
-                          {d.delivery_fee > 0
-                            ? ` + ${formatPHP(d.delivery_fee)}`
-                            : ""}
-                        </div>
+                        <StatusChip
+                          label={
+                            isCancelled
+                              ? "Cancelled"
+                              : d.payment_status === "paid"
+                                ? "Paid"
+                                : "Unpaid"
+                          }
+                          tone={
+                            isCancelled
+                              ? "outline"
+                              : d.payment_status === "paid"
+                                ? "solid"
+                                : "soft"
+                          }
+                          dot
+                        />
                       </td>
-
-                      <td className="px-3 py-3">
-                        {isCancelled ? (
-                          <StatusChip label="Cancelled" tone="outline" />
-                        ) : (
-                          <div className="flex flex-wrap gap-1.5">
-                            <StatusChip
-                              label={
-                                d.payment_status === "paid" ? "Paid" : "Unpaid"
-                              }
-                              tone={
-                                d.payment_status === "paid" ? "solid" : "soft"
-                              }
-                              dot
-                            />
-                            <StatusChip
-                              label={d.payment_method.toUpperCase()}
-                              tone="outline"
-                            />
-                          </div>
-                        )}
+                      <td className="px-3 py-3 text-[11px] text-[var(--av-muted)]">
+                        {d.delivered_by || d.notes || "—"}
                       </td>
-
-                      <td className="px-3 py-3 text-[11px] text-[#71717A]">
-                        {d.delivered_by || "—"}
-                      </td>
-
                       <td className="rounded-r-2xl py-3 pr-3 text-right">
                         <RowActionMenu
                           ariaLabel={`Actions for ${d.customer_name}`}
                           actions={
-                            isCancelled
-                              ? []
-                              : [
-                                  ...(d.payment_status !== "paid"
+                            !isCancelled
+                              ? [
+                                  ...(d.payment_status === "unpaid"
                                     ? [
                                         {
-                                          label: busy
-                                            ? "Updating..."
-                                            : "Mark Paid (Cash)",
-                                          disabled: busy,
+                                          label: "Mark Paid (Cash)",
+                                          disabled: updatingId === d.id,
                                           onClick: () =>
                                             void handlePatchDelivery(d.id, {
                                               paymentStatus: "paid",
@@ -907,7 +938,7 @@ export function DeliveriesTab({
                                         },
                                         {
                                           label: "Mark Paid (GCash)",
-                                          disabled: busy,
+                                          disabled: updatingId === d.id,
                                           onClick: () =>
                                             void handlePatchDelivery(d.id, {
                                               paymentStatus: "paid",
@@ -917,20 +948,34 @@ export function DeliveriesTab({
                                       ]
                                     : []),
                                   {
-                                    label: "Request Correction / Cancel",
-                                    disabled: busy,
-                                    emphasis: "muted" as const,
+                                    label: isElevatedActor
+                                      ? "Fix Payment / Amount"
+                                      : "Request Correction / Cancel",
                                     onClick: () =>
                                       onRequestCorrection({
                                         entityType: "delivery",
                                         entityId: d.id,
                                         entityLabel: `${d.customer_name} · ${d.destination}`,
-                                        currentSummary: `${d.quantity} gal · ${formatPHP(d.total_amount)} (${d.payment_method.toUpperCase()} / ${d.payment_status})`,
+                                        currentSummary: `${d.quantity} gal · ${formatPHP(d.total_amount)} (${d.payment_status})`,
                                         defaultPaymentMethod: d.payment_method,
                                         defaultAmount: d.total_amount,
                                       }),
                                   },
+                                  ...(isElevatedActor
+                                    ? [
+                                        {
+                                          label: "Cancel Delivery",
+                                          disabled: updatingId === d.id,
+                                          emphasis: "muted" as const,
+                                          onClick: () =>
+                                            void handlePatchDelivery(d.id, {
+                                              cancelled: true,
+                                            }),
+                                        },
+                                      ]
+                                    : []),
                                 ]
+                              : []
                           }
                         />
                       </td>

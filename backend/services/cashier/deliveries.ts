@@ -15,6 +15,7 @@ import {
 } from "@/backend/services/audit-ledger";
 import {
   adjustGallonStock,
+  assertOperationalDateAllowed,
   DEFAULT_GALLON_WITH_WATER_PRICE,
   DEFAULT_REFILL_PRICE,
   isMissingCashierSchemaError,
@@ -394,7 +395,11 @@ export async function createDelivery(
   ownerId: string,
   input: CreateDeliveryInput
 ): Promise<DeliveryRow> {
-  const businessDate = sanitizeBusinessDate(input.businessDate);
+  const businessDate = assertOperationalDateAllowed(
+    input.businessDate,
+    7,
+    "Delivery date"
+  );
   const customerName = input.customerName.trim();
   const destination = input.destination.trim();
   const quantity = Math.floor(Number(input.quantity));
@@ -471,7 +476,6 @@ export async function createDelivery(
       customer_name: customerName,
       customer_phone: input.customerPhone?.trim() || null,
       destination,
-      gallon_type: "slim",
       order_type: input.orderType,
       quantity,
       empty_gallons_returned: emptyGallonsReturned,
@@ -502,7 +506,6 @@ export async function createDelivery(
     await adjustGallonStock({
       ownerId,
       cashierId,
-      gallonType: "slim",
       movementType: "delivery_out",
       quantityDelta: -quantity,
       businessDate,
@@ -514,7 +517,6 @@ export async function createDelivery(
       await adjustGallonStock({
         ownerId,
         cashierId,
-        gallonType: "slim",
         movementType: "borrow_return",
         quantityDelta: extraEmptiesReturned,
         businessDate,
@@ -532,7 +534,6 @@ export async function createDelivery(
         customer_name: customerName,
         customer_phone: input.customerPhone?.trim() || null,
         customer_address: destination,
-        gallon_type: "slim",
         qty_borrowed: newlyBorrowed,
         qty_returned: 0,
         deposit_amount: 0,
@@ -544,7 +545,6 @@ export async function createDelivery(
       await adjustGallonStock({
         ownerId,
         cashierId,
-        gallonType: "slim",
         movementType: "borrow_out",
         quantityDelta: -newlyBorrowed,
         businessDate,
@@ -555,7 +555,6 @@ export async function createDelivery(
       await adjustGallonStock({
         ownerId,
         cashierId,
-        gallonType: "slim",
         movementType: "borrow_return",
         quantityDelta: extraEmptiesReturned,
         businessDate,
@@ -593,20 +592,22 @@ export async function createDelivery(
       }
     } else {
       // Exact 1-for-1 swap: log In & Out record with 0 net stock change
-      const { data: currentStock } = await admin
+      const { data: stockRows } = await admin
         .from("gallon_stock")
         .select("on_hand_qty")
-        .eq("owner_id", ownerId)
-        .eq("gallon_type", "slim")
-        .maybeSingle();
+        .eq("owner_id", ownerId);
+
+      const onHandTotal = (stockRows ?? []).reduce(
+        (sum, r) => sum + r.on_hand_qty,
+        0
+      );
 
       await admin.from("gallon_inventory_logs").insert({
         owner_id: ownerId,
         cashier_id: cashierId,
-        gallon_type: "slim",
         movement_type: "delivery_out",
         quantity_delta: 0,
-        balance_after: currentStock?.on_hand_qty ?? 0,
+        balance_after: onHandTotal,
         reference_id: delivery.id,
         notes: `Swap delivery to ${customerName} (${destination}): ${quantity} out / ${emptyGallonsReturned} empty in`,
         business_date: businessDate,

@@ -137,6 +137,8 @@ export interface CreateCorrectionInput {
   ownerId: string;
   requestedBy: string;
   requesterName: string;
+  actorRole?: "cashier" | "owner" | "superadmin";
+  autoApprove?: boolean;
   entityType: CorrectionEntityType;
   entityId: string;
   correctionType: CorrectionType;
@@ -406,22 +408,37 @@ export async function createCorrectionRequest(
     actor: {
       id: input.requestedBy,
       name: input.requesterName,
-      role: "cashier",
+      role: input.actorRole ?? "cashier",
     },
     module: "supervision",
-    eventType: "correction.requested",
+    eventType: input.autoApprove
+      ? "correction.direct_applied"
+      : "correction.requested",
     entityType: input.entityType,
     entityId: input.entityId,
     referenceLabel: entityLabel,
-    summary: `Cashier requested ${input.correctionType.replace(/_/g, " ")} on ${entityLabel}: "${reason}"`,
+    summary: input.autoApprove
+      ? `${input.actorRole === "superadmin" ? "Superadmin" : "Owner"} applied ${input.correctionType.replace(/_/g, " ")} on ${entityLabel}: "${reason}"`
+      : `Cashier requested ${input.correctionType.replace(/_/g, " ")} on ${entityLabel}: "${reason}"`,
     beforeSnapshot,
     afterSnapshot: sanitizedProposed,
     metadata: {
       correction_request_id: inserted.id,
       correction_type: input.correctionType,
       reason,
+      direct_apply: Boolean(input.autoApprove),
     },
   });
+
+  if (input.autoApprove) {
+    return reviewCorrectionRequest({
+      ownerId: input.ownerId,
+      reviewerId: input.requestedBy,
+      requestId: inserted.id,
+      decision: "approved",
+      reviewerNote: `Applied directly by ${input.actorRole === "superadmin" ? "Superadmin" : "Owner"}`,
+    });
+  }
 
   return inserted;
 }

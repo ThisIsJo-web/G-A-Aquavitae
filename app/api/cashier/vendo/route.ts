@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import type { VendoPeriodType } from "@/backend/db/types";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import { requireCashierAccess } from "@/backend/services/auth-guards";
 import {
   createVendoCollection,
@@ -9,8 +14,10 @@ import {
 
 export async function GET(request: Request) {
   try {
-    const { tenantOwnerId } = await requireCashierAccess();
     const { searchParams } = new URL(request.url);
+    const { tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const date = searchParams.get("date") ?? undefined;
     const overview = await getVendoOverview(tenantOwnerId, date);
 
@@ -37,7 +44,10 @@ interface CreateVendoBody {
 
 export async function POST(request: Request) {
   try {
-    const { profile, tenantOwnerId } = await requireCashierAccess();
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const body = await parseJsonBody<CreateVendoBody>(request);
 
     if (!body || !Number.isFinite(Number(body.amount))) {
@@ -70,6 +80,25 @@ export async function POST(request: Request) {
       notes: typeof body.notes === "string" ? body.notes : undefined,
       businessDate:
         typeof body.businessDate === "string" ? body.businessDate : undefined,
+    });
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "vendo",
+      action: `Recorded Vendo Income (${periodType} · ₱${collection.amount.toFixed(2)})`,
+      controlLabel: "Save Vendo Income",
+      targetType: "vendo",
+      targetId: collection.id,
+      targetLabel: collection.machine_name,
+      route: "/api/cashier/vendo",
+      ...meta,
     });
 
     return NextResponse.json(

@@ -5,7 +5,6 @@ import type {
   DeliveryPaymentStatus,
   DeliveryStatus,
   GallonMovementType,
-  GallonType,
   PosPaymentMethod,
   PosProductCategory,
   PosSaleStatus,
@@ -20,7 +19,6 @@ export type {
   DeliveryPaymentStatus,
   DeliveryStatus,
   GallonMovementType,
-  GallonType,
   PosPaymentMethod,
   PosProductCategory,
   PosSaleStatus,
@@ -35,10 +33,10 @@ export function formatPHP(amount: number): string {
   })}`;
 }
 
-export interface ElevationBannerDTO {
-  targetOwnerLabel: string;
-  reason: string;
-  expiresAt: string;
+export interface StationOptionDTO {
+  id: string;
+  email: string;
+  fullName: string | null;
 }
 
 export interface PosProductDTO {
@@ -55,7 +53,6 @@ export interface PosSaleItemDTO {
   product_id: string | null;
   product_name: string;
   category: PosProductCategory;
-  gallon_type: GallonType | null;
   quantity: number;
   unit_price: number;
   line_total: number;
@@ -190,7 +187,6 @@ export interface VendoOverviewDTO {
 
 export interface GallonStockDTO {
   id: string;
-  gallon_type: GallonType;
   on_hand_qty: number;
   damaged_qty: number;
   updated_at: string;
@@ -198,7 +194,6 @@ export interface GallonStockDTO {
 
 export interface GallonInventoryLogDTO {
   id: string;
-  gallon_type: GallonType;
   movement_type: GallonMovementType;
   quantity_delta: number;
   balance_after: number;
@@ -213,7 +208,6 @@ export interface BorrowedGallonDTO {
   customer_name: string;
   customer_phone: string | null;
   customer_address: string | null;
-  gallon_type: GallonType;
   qty_borrowed: number;
   qty_returned: number;
   deposit_amount: number;
@@ -231,8 +225,6 @@ export interface InventoryOverviewDTO {
   borrowedGallons: BorrowedGallonDTO[];
   summary: {
     totalOnHand: number;
-    slimOnHand: number;
-    roundOnHand: number;
     totalDamaged: number;
     currentlyBorrowedOut: number;
     activeBorrowers: number;

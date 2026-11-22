@@ -1,11 +1,7 @@
 import "server-only";
 
 import { createSupabaseAdminClient } from "@/backend/db/supabase";
-import type {
-  Database,
-  GallonMovementType,
-  GallonType,
-} from "@/backend/db/types";
+import type { Database, GallonMovementType } from "@/backend/db/types";
 import { AuthServiceError } from "@/backend/services/auth";
 import {
   formatCentavosPHP,
@@ -14,6 +10,7 @@ import {
 } from "@/backend/services/audit-ledger";
 import {
   adjustGallonStock,
+  assertOperationalDateAllowed,
   ensureStationDefaults,
   isMissingCashierSchemaError,
   roundMoney,
@@ -36,8 +33,6 @@ export interface InventoryOverviewResult {
   borrowedGallons: BorrowedGallonRow[];
   summary: {
     totalOnHand: number;
-    slimOnHand: number;
-    roundOnHand: number;
     totalDamaged: number;
     currentlyBorrowedOut: number;
     activeBorrowers: number;
@@ -60,8 +55,6 @@ export async function getInventoryOverview(
       borrowedGallons: [],
       summary: {
         totalOnHand: 0,
-        slimOnHand: 0,
-        roundOnHand: 0,
         totalDamaged: 0,
         currentlyBorrowedOut: 0,
         activeBorrowers: 0,
@@ -71,16 +64,11 @@ export async function getInventoryOverview(
 
   const admin = createSupabaseAdminClient();
   const [stockRes, logsRes, borrowedRes] = await Promise.all([
-    admin
-      .from("gallon_stock")
-      .select("*")
-      .eq("owner_id", ownerId)
-      .order("gallon_type", { ascending: true }),
+    admin.from("gallon_stock").select("*").eq("owner_id", ownerId),
     admin
       .from("gallon_inventory_logs")
       .select("*")
       .eq("owner_id", ownerId)
-      .eq("business_date", businessDate)
       .order("created_at", { ascending: false })
       .limit(50),
     admin
@@ -105,8 +93,6 @@ export async function getInventoryOverview(
       borrowedGallons: [],
       summary: {
         totalOnHand: 0,
-        slimOnHand: 0,
-        roundOnHand: 0,
         totalDamaged: 0,
         currentlyBorrowedOut: 0,
         activeBorrowers: 0,
@@ -122,11 +108,8 @@ export async function getInventoryOverview(
     })
   );
 
-  const slimRow = stock.find((s) => s.gallon_type === "slim");
-  const roundRow = stock.find((s) => s.gallon_type === "round");
-  const slimOnHand = slimRow?.on_hand_qty ?? 0;
-  const roundOnHand = roundRow?.on_hand_qty ?? 0;
-  const totalDamaged = (slimRow?.damaged_qty ?? 0) + (roundRow?.damaged_qty ?? 0);
+  const totalOnHand = stock.reduce((sum, s) => sum + s.on_hand_qty, 0);
+  const totalDamaged = stock.reduce((sum, s) => sum + s.damaged_qty, 0);
 
   let currentlyBorrowedOut = 0;
   let activeBorrowers = 0;
@@ -145,9 +128,7 @@ export async function getInventoryOverview(
     logs: logsRes.data ?? [],
     borrowedGallons,
     summary: {
-      totalOnHand: slimOnHand + roundOnHand,
-      slimOnHand,
-      roundOnHand,
+      totalOnHand,
       totalDamaged,
       currentlyBorrowedOut,
       activeBorrowers,
@@ -156,10 +137,9 @@ export async function getInventoryOverview(
 }
 
 export async function recordManualStockMovement(
-  cashierId: string,
+  actorId: string,
   ownerId: string,
   input: {
-    gallonType: GallonType;
     movementType: Extract<
       GallonMovementType,
       "restock" | "damaged" | "adjustment"
@@ -169,7 +149,11 @@ export async function recordManualStockMovement(
     businessDate?: string;
   }
 ) {
-  const businessDate = sanitizeBusinessDate(input.businessDate);
+  const businessDate = assertOperationalDateAllowed(
+    input.businessDate,
+    7,
+    "Stock date"
+  );
   const rawQty = Math.trunc(Number(input.quantity));
 
   if (!Number.isFinite(rawQty) || rawQty === 0) {
@@ -188,8 +172,7 @@ export async function recordManualStockMovement(
 
   return adjustGallonStock({
     ownerId,
-    cashierId,
-    gallonType: input.gallonType,
+    cashierId: actorId,
     movementType: input.movementType,
     quantityDelta,
     incrementDamaged,
@@ -199,20 +182,23 @@ export async function recordManualStockMovement(
 }
 
 export async function createBorrowedGallonRecord(
-  cashierId: string,
+  actorId: string,
   ownerId: string,
   input: {
     customerName: string;
     customerPhone?: string;
     customerAddress?: string;
-    gallonType: GallonType;
     qtyBorrowed: number;
     depositAmount?: number;
     notes?: string;
     businessDate?: string;
   }
 ): Promise<BorrowedGallonRow> {
-  const businessDate = sanitizeBusinessDate(input.businessDate);
+  const businessDate = assertOperationalDateAllowed(
+    input.businessDate,
+    7,
+    "Borrow date"
+  );
   const customerName = input.customerName.trim();
   const qtyBorrowed = Math.floor(Number(input.qtyBorrowed));
 
@@ -230,11 +216,10 @@ export async function createBorrowedGallonRecord(
     .from("borrowed_gallons")
     .insert({
       owner_id: ownerId,
-      cashier_id: cashierId,
+      cashier_id: actorId,
       customer_name: customerName,
       customer_phone: input.customerPhone?.trim() || null,
       customer_address: input.customerAddress?.trim() || null,
-      gallon_type: input.gallonType,
       qty_borrowed: qtyBorrowed,
       qty_returned: 0,
       deposit_amount: depositAmount,
@@ -254,8 +239,7 @@ export async function createBorrowedGallonRecord(
 
   await adjustGallonStock({
     ownerId,
-    cashierId,
-    gallonType: input.gallonType,
+    cashierId: actorId,
     movementType: "borrow_out",
     quantityDelta: -qtyBorrowed,
     businessDate,
@@ -268,7 +252,7 @@ export async function createBorrowedGallonRecord(
     await recordFinancialAuditEvent({
       ownerId,
       businessDate,
-      actorId: cashierId,
+      actorId,
       module: "inventory",
       eventType: "borrow.deposit_received",
       entityType: "borrowed_gallon",
@@ -291,13 +275,17 @@ export async function createBorrowedGallonRecord(
 }
 
 export async function returnBorrowedGallons(
-  cashierId: string,
+  actorId: string,
   ownerId: string,
   borrowId: string,
   qtyToReturn: number,
   businessDateInput?: string
 ): Promise<BorrowedGallonRow> {
-  const businessDate = sanitizeBusinessDate(businessDateInput);
+  const businessDate = assertOperationalDateAllowed(
+    businessDateInput,
+    7,
+    "Return date"
+  );
   const returnQty = Math.floor(Number(qtyToReturn));
 
   if (!Number.isFinite(returnQty) || returnQty <= 0) {
@@ -351,8 +339,7 @@ export async function returnBorrowedGallons(
 
   await adjustGallonStock({
     ownerId,
-    cashierId,
-    gallonType: existing.gallon_type,
+    cashierId: actorId,
     movementType: "borrow_return",
     quantityDelta: returnQty,
     businessDate,

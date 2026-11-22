@@ -11,6 +11,11 @@ import {
   ShoppingBag,
 } from "lucide-react";
 import { useState } from "react";
+import { trackAction } from "@/app/_components/activity-tracker";
+import {
+  handleDecimalKeyDown,
+  sanitizeDecimalInput,
+} from "@/app/_components/ui/input-validation";
 import {
   EmptyState,
   NoticeBanner,
@@ -32,6 +37,8 @@ interface WalkInPosTabProps {
   pos: PosOverviewDTO;
   customers: DeliveryCustomerDTO[];
   businessDate: string;
+  stationQuery: string;
+  isElevatedActor: boolean;
   onDataChanged: () => Promise<void> | void;
   onRequestCorrection: (target: CorrectionModalTarget) => void;
 }
@@ -52,12 +59,14 @@ export function WalkInPosTab({
   pos,
   customers,
   businessDate,
+  stationQuery,
+  isElevatedActor,
   onDataChanged,
   onRequestCorrection,
 }: WalkInPosTabProps) {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<PosPaymentMethod>("cash");
-  const [discountInput, setDiscountInput] = useState("0");
+  const [discountInput, setDiscountInput] = useState("");
   const [tenderedInput, setTenderedInput] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -130,7 +139,7 @@ export function WalkInPosTab({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/cashier/pos", {
+      const res = await fetch(`/api/cashier/pos${stationQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -159,7 +168,7 @@ export function WalkInPosTab({
 
       setLastReceipt(data.sale);
       setCart([]);
-      setDiscountInput("0");
+      setDiscountInput("");
       setTenderedInput("");
       setSelectedCustomerId("");
       setCustomerName("");
@@ -176,10 +185,13 @@ export function WalkInPosTab({
     setVoidingId(saleId);
     setError(null);
     try {
-      const res = await fetch(`/api/cashier/pos/${saleId}`, {
+      const res = await fetch(`/api/cashier/pos/${saleId}${stationQuery}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "void", reason: "Voided by cashier" }),
+        body: JSON.stringify({
+          action: "void",
+          reason: isElevatedActor ? "Voided by owner/admin" : "Voided by cashier",
+        }),
       });
       if (!res.ok) {
         const data = (await res.json()) as { error?: string };
@@ -203,7 +215,7 @@ export function WalkInPosTab({
 
   return (
     <div className="space-y-6">
-      {/* Quick Stats Row — 1 Highlighted Solid Black Card */}
+      {/* Quick Stats Row */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <QuickStatCard
           highlighted
@@ -234,15 +246,15 @@ export function WalkInPosTab({
 
       {/* Tablet-First POS Grid */}
       <div className="grid gap-6 lg:grid-cols-12">
-        {/* Left: Large Touch-Friendly Product Tiles */}
+        {/* Left: Touch-Friendly Product Tiles */}
         <div className="space-y-4 lg:col-span-7">
           <div className="av-card p-6">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-base font-bold text-[#111111]">
+                <h2 className="text-base font-bold text-[var(--av-ink)]">
                   Tap Items to Add
                 </h2>
-                <p className="text-xs font-normal text-[#71717A]">
+                <p className="text-xs font-normal text-[var(--av-muted)]">
                   Use + / − directly on each tile for fast rush checkout.
                 </p>
               </div>
@@ -262,30 +274,30 @@ export function WalkInPosTab({
                     key={product.id}
                     className={`flex min-h-[180px] flex-col justify-between rounded-[22px] border p-5 transition ${
                       isActive
-                        ? "border-[#111111] bg-[#F8F8FA] shadow-[0_4px_16px_rgba(17,17,17,0.06)]"
-                        : "border-[#E8E8EC] bg-white hover:border-[#D4D4D8]"
+                        ? "border-[var(--av-ink)] bg-[var(--av-surface-subtle)] shadow-[0_4px_16px_rgba(20,18,14,0.08)]"
+                        : "border-[var(--av-border)] bg-[var(--av-surface)] hover:border-[var(--av-border-strong)]"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <span
                         className={`flex h-11 w-11 items-center justify-center rounded-full ${
                           isActive
-                            ? "bg-[#111111] text-white"
-                            : "bg-[#F2F2F4] text-[#111111]"
+                            ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                            : "bg-[var(--av-surface-subtle)] text-[var(--av-ink)]"
                         }`}
                       >
                         <Droplets className="h-5 w-5" />
                       </span>
-                      <span className="text-2xl font-bold tracking-tight text-[#111111] tabular-nums">
+                      <span className="text-2xl font-bold tracking-tight text-[var(--av-ink)] tabular-nums">
                         {formatPHP(product.unit_price)}
                       </span>
                     </div>
 
                     <div className="mt-4">
-                      <div className="text-base font-bold text-[#111111]">
+                      <div className="text-base font-bold text-[var(--av-ink)]">
                         {product.name}
                       </div>
-                      <p className="mt-0.5 text-xs font-normal text-[#71717A]">
+                      <p className="mt-0.5 text-xs font-normal text-[var(--av-muted)]">
                         {product.category === "refill"
                           ? "Customer brings own gallon"
                           : "New gallon filled with water"}
@@ -298,12 +310,12 @@ export function WalkInPosTab({
                         onClick={() => adjustQty(product, -1)}
                         disabled={qty === 0}
                         aria-label={`Decrease ${product.name}`}
-                        className="flex h-11 w-11 items-center justify-center rounded-full border border-[#D4D4D8] bg-white text-[#111111] transition hover:bg-[#F4F4F6] active:scale-95 disabled:opacity-30"
+                        className="av-btn-outline flex h-11 w-11 items-center justify-center rounded-full transition active:scale-95 disabled:opacity-30"
                       >
                         <Minus className="h-4 w-4" />
                       </button>
 
-                      <span className="min-w-[44px] text-center text-xl font-bold text-[#111111] tabular-nums">
+                      <span className="min-w-[44px] text-center text-xl font-bold text-[var(--av-ink)] tabular-nums">
                         {qty}
                       </span>
 
@@ -311,7 +323,7 @@ export function WalkInPosTab({
                         type="button"
                         onClick={() => adjustQty(product, 1)}
                         aria-label={`Add ${product.name}`}
-                        className="flex h-11 w-11 items-center justify-center rounded-full bg-[#111111] text-white transition hover:bg-black/85 active:scale-95"
+                        className="av-btn-primary flex h-11 w-11 items-center justify-center rounded-full transition active:scale-95"
                       >
                         <Plus className="h-4 w-4" />
                       </button>
@@ -339,14 +351,21 @@ export function WalkInPosTab({
         <div className="av-card flex flex-col justify-between p-6 lg:col-span-5">
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-base font-bold text-[#111111]">
+              <h2 className="text-base font-bold text-[var(--av-ink)]">
                 Order Summary
               </h2>
               {cart.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setCart([])}
-                  className="text-xs font-semibold text-[#71717A] underline hover:text-[#111111]"
+                  onClick={() => {
+                    setCart([]);
+                    trackAction({
+                      module: "pos",
+                      action: "Cleared Walk-in cart",
+                      controlLabel: "Clear",
+                    });
+                  }}
+                  className="text-xs font-semibold text-[var(--av-muted)] underline hover:text-[var(--av-ink)]"
                 >
                   Clear
                 </button>
@@ -365,17 +384,17 @@ export function WalkInPosTab({
                 cart.map((line) => (
                   <div
                     key={line.product.id}
-                    className="flex items-center justify-between rounded-2xl bg-[#F7F7F9] px-4 py-3"
+                    className="flex items-center justify-between rounded-2xl bg-[var(--av-surface-subtle)] px-4 py-3"
                   >
                     <div className="min-w-0">
-                      <div className="truncate text-xs font-bold text-[#111111]">
+                      <div className="truncate text-xs font-bold text-[var(--av-ink)]">
                         {line.product.name}
                       </div>
-                      <div className="text-[11px] font-medium text-[#71717A] tabular-nums">
+                      <div className="text-[11px] font-medium text-[var(--av-muted)] tabular-nums">
                         {formatPHP(line.product.unit_price)} × {line.quantity}
                       </div>
                     </div>
-                    <span className="text-sm font-bold text-[#111111] tabular-nums">
+                    <span className="text-sm font-bold text-[var(--av-ink)] tabular-nums">
                       {formatPHP(line.product.unit_price * line.quantity)}
                     </span>
                   </div>
@@ -383,9 +402,9 @@ export function WalkInPosTab({
               )}
             </div>
 
-            {/* Quick Payment Pills (Cash · GCash · Utang) */}
+            {/* Payment Method Pills */}
             <div>
-              <label className="mb-2 block text-xs font-semibold text-[#71717A]">
+              <label className="mb-2 block text-xs font-semibold text-[var(--av-muted)]">
                 Payment Method
               </label>
               <div className="grid grid-cols-3 gap-2">
@@ -397,8 +416,8 @@ export function WalkInPosTab({
                       onClick={() => setPaymentMethod(method)}
                       className={`rounded-full border px-3 py-2.5 text-xs font-semibold transition ${
                         paymentMethod === method
-                          ? "border-[#111111] bg-[#111111] text-white"
-                          : "border-[#D4D4D8] bg-white text-[#111111] hover:bg-[#F4F4F6]"
+                          ? "border-[var(--av-accent)] bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                          : "border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink)] hover:bg-[var(--av-surface-subtle)]"
                       }`}
                     >
                       {PAYMENT_LABELS[method]}
@@ -408,7 +427,7 @@ export function WalkInPosTab({
               </div>
             </div>
 
-            {/* Customer + Live Container Balance */}
+            {/* Regular Customer Picker */}
             {activeCustomers.length > 0 && (
               <div>
                 <select
@@ -420,7 +439,7 @@ export function WalkInPosTab({
                     setCustomerName(found ? found.customer_name : "");
                   }}
                   aria-label="Regular customer"
-                  className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs font-medium text-[#111111] focus:border-[#111111] focus:bg-white focus:outline-none"
+                  className="av-input w-full rounded-2xl px-3.5 py-2.5 text-xs font-medium"
                 >
                   <option value="">Walk-in customer (or select regular)...</option>
                   {activeCustomers.map((c) => (
@@ -431,7 +450,7 @@ export function WalkInPosTab({
                   ))}
                 </select>
                 {selectedCustomer && (
-                  <div className="mt-2 flex items-center justify-between rounded-2xl bg-[#F4F4F6] px-3.5 py-2 text-[11px] font-medium text-[#52525B]">
+                  <div className="mt-2 flex items-center justify-between rounded-2xl bg-[var(--av-surface-subtle)] px-3.5 py-2 text-[11px] font-medium text-[var(--av-ink-secondary)]">
                     <span>Container balance ({selectedCustomer.area})</span>
                     <StatusChip
                       label={`${selectedCustomer.gallons_held} gallons held`}
@@ -455,45 +474,54 @@ export function WalkInPosTab({
                     ? "Customer name (required)"
                     : "Customer name (optional)"
                 }
-                className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input rounded-2xl px-3.5 py-2.5 text-xs"
               />
               <input
                 type="text"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="Note (optional)"
-                className="rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-xs text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+                className="av-input rounded-2xl px-3.5 py-2.5 text-xs"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="mb-1 block text-[11px] font-semibold text-[#71717A]">
+                <label className="mb-1 block text-[11px] font-semibold text-[var(--av-muted)]">
                   Discount (₱)
                 </label>
                 <input
-                  type="number"
-                  min={0}
-                  step="1"
+                  type="text"
+                  inputMode="decimal"
                   value={discountInput}
-                  onChange={(e) => setDiscountInput(e.target.value)}
-                  className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-sm font-semibold text-[#111111] tabular-nums focus:border-[#111111] focus:bg-white focus:outline-none"
+                  onKeyDown={handleDecimalKeyDown}
+                  onChange={(e) =>
+                    setDiscountInput(sanitizeDecimalInput(e.target.value))
+                  }
+                  placeholder="e.g. 10"
+                  className="av-input w-full rounded-2xl px-3.5 py-2 text-sm font-semibold tabular-nums"
                 />
               </div>
 
               {paymentMethod === "cash" && (
                 <div>
-                  <label className="mb-1 block text-[11px] font-semibold text-[#71717A]">
+                  <label className="mb-1 block text-[11px] font-semibold text-[var(--av-muted)]">
                     Cash Received (₱)
                   </label>
                   <input
-                    type="number"
-                    min={0}
-                    step="1"
+                    type="text"
+                    inputMode="decimal"
                     value={tenderedInput}
-                    onChange={(e) => setTenderedInput(e.target.value)}
-                    placeholder={totalAmount.toFixed(2)}
-                    className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-sm font-semibold text-[#111111] tabular-nums focus:border-[#111111] focus:bg-white focus:outline-none"
+                    onKeyDown={handleDecimalKeyDown}
+                    onChange={(e) =>
+                      setTenderedInput(sanitizeDecimalInput(e.target.value))
+                    }
+                    placeholder={
+                      totalAmount > 0
+                        ? `e.g. ${totalAmount.toFixed(2)}`
+                        : "Enter cash received"
+                    }
+                    className="av-input w-full rounded-2xl px-3.5 py-2 text-sm font-semibold tabular-nums"
                   />
                 </div>
               )}
@@ -506,7 +534,7 @@ export function WalkInPosTab({
                     key={`${preset}-${idx}`}
                     type="button"
                     onClick={() => setTenderedInput(String(preset))}
-                    className="rounded-full border border-[#E4E4E7] bg-white px-3 py-1 text-[11px] font-semibold text-[#111111] tabular-nums transition hover:border-[#111111] hover:bg-[#111111] hover:text-white"
+                    className="rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3 py-1 text-[11px] font-semibold text-[var(--av-ink)] tabular-nums transition hover:border-[var(--av-accent)] hover:bg-[var(--av-accent)] hover:text-[var(--av-accent-ink)]"
                   >
                     {idx === 0 ? "Exact" : `₱${preset}`}
                   </button>
@@ -516,29 +544,29 @@ export function WalkInPosTab({
           </div>
 
           <div className="mt-5 space-y-4">
-            <div className="space-y-1.5 rounded-2xl bg-[#F7F7F9] p-4 text-xs">
-              <div className="flex justify-between text-[#71717A]">
+            <div className="space-y-1.5 rounded-2xl bg-[var(--av-surface-subtle)] p-4 text-xs">
+              <div className="flex justify-between text-[var(--av-muted)]">
                 <span>Subtotal</span>
-                <span className="font-semibold text-[#111111] tabular-nums">
+                <span className="font-semibold text-[var(--av-ink)] tabular-nums">
                   {formatPHP(subtotal)}
                 </span>
               </div>
               {discount > 0 && (
-                <div className="flex justify-between text-[#71717A]">
+                <div className="flex justify-between text-[var(--av-muted)]">
                   <span>Discount</span>
-                  <span className="font-semibold text-[#111111] tabular-nums">
+                  <span className="font-semibold text-[var(--av-ink)] tabular-nums">
                     -{formatPHP(discount)}
                   </span>
                 </div>
               )}
-              <div className="flex justify-between border-t border-[#E8E8EC] pt-2 text-base font-bold text-[#111111]">
+              <div className="flex justify-between border-t border-[var(--av-border)] pt-2 text-base font-bold text-[var(--av-ink)]">
                 <span>Total</span>
                 <span className="tabular-nums">{formatPHP(totalAmount)}</span>
               </div>
               {paymentMethod === "cash" && (
-                <div className="flex justify-between text-xs font-semibold text-[#52525B]">
+                <div className="flex justify-between text-xs font-semibold text-[var(--av-ink-secondary)]">
                   <span>Change</span>
-                  <span className="tabular-nums text-[#111111]">
+                  <span className="tabular-nums text-[var(--av-ink)]">
                     {formatPHP(changeAmount)}
                   </span>
                 </div>
@@ -557,7 +585,7 @@ export function WalkInPosTab({
               type="button"
               onClick={handleCheckout}
               disabled={submitting || cart.length === 0 || pos.schemaMissing}
-              className="w-full rounded-full bg-[#111111] px-6 py-4 text-sm font-semibold text-white transition hover:bg-black/85 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-35"
+              className="av-btn-primary w-full rounded-full px-6 py-4 text-sm font-semibold transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-35"
             >
               {submitting
                 ? "Completing Sale..."
@@ -567,14 +595,14 @@ export function WalkInPosTab({
         </div>
       </div>
 
-      {/* Rounded-Row Walk-in Sales Table */}
+      {/* Walk-in Sales Table */}
       <div className="av-card p-6">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 className="text-base font-bold text-[#111111]">
+            <h3 className="text-base font-bold text-[var(--av-ink)]">
               Walk-in Sales ({pos.sales.length})
             </h3>
-            <p className="text-xs font-normal text-[#71717A]">
+            <p className="text-xs font-normal text-[var(--av-muted)]">
               Recorded for {businessDate}
             </p>
           </div>
@@ -593,7 +621,7 @@ export function WalkInPosTab({
           ) : (
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
-                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
+                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                   <th className="w-8 pb-1 pl-3" />
                   <th className="px-3 pb-1">Receipt</th>
                   <th className="px-3 pb-1">Items</th>
@@ -607,7 +635,7 @@ export function WalkInPosTab({
                 {pos.sales.map((sale) => (
                   <tr
                     key={sale.id}
-                    className={`rounded-2xl bg-[#F7F7F9] font-medium transition hover:bg-[#F0F0F3] ${
+                    className={`rounded-2xl bg-[var(--av-surface-subtle)] font-medium transition hover:bg-[var(--av-surface-hover)] ${
                       sale.status === "voided" ? "opacity-55" : ""
                     }`}
                   >
@@ -617,19 +645,19 @@ export function WalkInPosTab({
                         checked={selectedSales.has(sale.id)}
                         onChange={() => toggleSelectSale(sale.id)}
                         aria-label={`Select receipt ${sale.receipt_no}`}
-                        className="h-4 w-4 rounded border-[#D4D4D8] accent-[#111111]"
+                        className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
                       />
                     </td>
                     <td className="px-3 py-3">
-                      <div className="font-bold text-[#111111] tabular-nums">
+                      <div className="font-bold text-[var(--av-ink)] tabular-nums">
                         {sale.receipt_no}
                       </div>
-                      <div className="text-[11px] font-normal text-[#71717A]">
+                      <div className="text-[11px] font-normal text-[var(--av-muted)]">
                         {sale.customer_name || "Walk-in"} ·{" "}
                         {new Date(sale.created_at).toLocaleTimeString()}
                       </div>
                     </td>
-                    <td className="px-3 py-3 text-[#3F3F46]">
+                    <td className="px-3 py-3 text-[var(--av-ink-secondary)]">
                       {sale.items
                         .map((i) => `${i.quantity}× ${i.product_name}`)
                         .join(", ")}
@@ -640,7 +668,7 @@ export function WalkInPosTab({
                         tone="outline"
                       />
                     </td>
-                    <td className="px-3 py-3 font-bold text-[#111111] tabular-nums">
+                    <td className="px-3 py-3 font-bold text-[var(--av-ink)] tabular-nums">
                       {formatPHP(sale.total_amount)}
                     </td>
                     <td className="px-3 py-3">
@@ -669,7 +697,9 @@ export function WalkInPosTab({
                           sale.status === "completed"
                             ? [
                                 {
-                                  label: "Request Payment Fix",
+                                  label: isElevatedActor
+                                    ? "Fix Payment Method"
+                                    : "Request Payment Fix",
                                   onClick: () =>
                                     onRequestCorrection({
                                       entityType: "pos_sale",
@@ -683,7 +713,7 @@ export function WalkInPosTab({
                                   label:
                                     voidingId === sale.id
                                       ? "Voiding..."
-                                      : "Void Sale (Today)",
+                                      : "Void Sale",
                                   disabled: voidingId === sale.id,
                                   emphasis: "muted",
                                   onClick: () => void handleVoidSale(sale.id),

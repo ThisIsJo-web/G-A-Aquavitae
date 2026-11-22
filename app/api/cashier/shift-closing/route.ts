@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import { requireCashierAccess } from "@/backend/services/auth-guards";
 import {
   closeDailyShift,
@@ -8,8 +13,10 @@ import {
 
 export async function GET(request: Request) {
   try {
-    const { tenantOwnerId } = await requireCashierAccess();
     const { searchParams } = new URL(request.url);
+    const { tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const date = searchParams.get("date") ?? undefined;
     const tally = await getDailyShiftTally(tenantOwnerId, date);
 
@@ -32,7 +39,10 @@ interface CloseShiftBody {
 
 export async function POST(request: Request) {
   try {
-    const { profile, tenantOwnerId } = await requireCashierAccess();
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const body = await parseJsonBody<CloseShiftBody>(request);
 
     if (
@@ -41,7 +51,7 @@ export async function POST(request: Request) {
       !Number.isFinite(Number(body.actualCash))
     ) {
       return NextResponse.json(
-        { error: "Valid openingCash and actualCash amounts are required" },
+        { error: "Valid starting cash and counted cash amounts are required" },
         { status: 400 }
       );
     }
@@ -54,6 +64,25 @@ export async function POST(request: Request) {
       openingCash: Number(body.openingCash),
       actualCash: Number(body.actualCash),
       notes: typeof body.notes === "string" ? body.notes : undefined,
+    });
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "shift",
+      action: `Closed Shift "${closing.shift_label}" (Counted ₱${closing.actual_cash.toFixed(2)})`,
+      controlLabel: "Close Shift & Save Tally",
+      targetType: "shift_closing",
+      targetId: closing.id,
+      targetLabel: `${closing.business_date} · ${closing.shift_label}`,
+      route: "/api/cashier/shift-closing",
+      ...meta,
     });
 
     return NextResponse.json(

@@ -3,6 +3,10 @@
 import { Banknote, Calculator, Clock, CreditCard } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import {
+  handleDecimalKeyDown,
+  sanitizeDecimalInput,
+} from "@/app/_components/ui/input-validation";
+import {
   EmptyState,
   NoticeBanner,
   RowActionMenu,
@@ -15,6 +19,8 @@ import { formatPHP, type ShiftClosingOverviewDTO } from "./types";
 interface ShiftClosingTabProps {
   data: ShiftClosingOverviewDTO;
   businessDate: string;
+  stationQuery: string;
+  isElevatedActor: boolean;
   onDataChanged: () => Promise<void> | void;
   onRequestCorrection: (target: CorrectionModalTarget) => void;
 }
@@ -22,13 +28,15 @@ interface ShiftClosingTabProps {
 export function ShiftClosingTab({
   data,
   businessDate,
+  stationQuery,
+  isElevatedActor,
   onDataChanged,
   onRequestCorrection,
 }: ShiftClosingTabProps) {
   const { liveTally, history } = data;
 
   const [shiftLabel, setShiftLabel] = useState("Full Day");
-  const [openingCashInput, setOpeningCashInput] = useState("0");
+  const [openingCashInput, setOpeningCashInput] = useState("");
   const [actualCashInput, setActualCashInput] = useState("");
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -57,7 +65,7 @@ export function ShiftClosingTab({
     setSuccess(null);
 
     try {
-      const res = await fetch("/api/cashier/shift-closing", {
+      const res = await fetch(`/api/cashier/shift-closing${stationQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -75,6 +83,7 @@ export function ShiftClosingTab({
       }
 
       setSuccess(`Shift "${shiftLabel}" closed and saved for ${businessDate}.`);
+      setOpeningCashInput("");
       setActualCashInput("");
       setNotes("");
       await Promise.resolve(onDataChanged());
@@ -87,7 +96,7 @@ export function ShiftClosingTab({
 
   return (
     <div className="space-y-6">
-      {/* Quick Stats Row (1 Solid Black Card) */}
+      {/* Quick Stats Row */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <QuickStatCard
           highlighted
@@ -120,10 +129,10 @@ export function ShiftClosingTab({
       <div className="grid gap-6 lg:grid-cols-12">
         <div className="av-card space-y-5 p-6 lg:col-span-7">
           <div>
-            <h2 className="text-base font-bold text-[#111111]">
+            <h2 className="text-base font-bold text-[var(--av-ink)]">
               Automatic Daily Cash Tally
             </h2>
-            <p className="text-xs font-normal text-[#71717A]">
+            <p className="text-xs font-normal text-[var(--av-muted)]">
               Walk-in sales, delivery sales, fees, and vendo income automatically
               summed into one final expected peso amount.
             </p>
@@ -159,21 +168,23 @@ export function ShiftClosingTab({
             ].map((row) => (
               <div
                 key={row.title}
-                className="flex items-center justify-between rounded-2xl bg-[#F7F7F9] px-4 py-3"
+                className="flex items-center justify-between rounded-2xl bg-[var(--av-surface-subtle)] px-4 py-3"
               >
                 <div>
-                  <div className="font-semibold text-[#111111]">{row.title}</div>
-                  <div className="text-[11px] font-normal text-[#71717A]">
+                  <div className="font-semibold text-[var(--av-ink)]">
+                    {row.title}
+                  </div>
+                  <div className="text-[11px] font-normal text-[var(--av-muted)]">
                     {row.sub}
                   </div>
                 </div>
-                <span className="text-sm font-bold text-[#111111] tabular-nums">
+                <span className="text-sm font-bold text-[var(--av-ink)] tabular-nums">
                   {row.val}
                 </span>
               </div>
             ))}
 
-            <div className="flex items-center justify-between rounded-2xl bg-[#111111] px-5 py-4 text-white">
+            <div className="flex items-center justify-between rounded-2xl bg-[var(--av-accent)] px-5 py-4 text-[var(--av-accent-ink)]">
               <span className="text-sm font-bold">
                 Final Expected Cash (Total Peso)
               </span>
@@ -183,12 +194,11 @@ export function ShiftClosingTab({
             </div>
           </div>
 
-          {/* Daily / Weekly / Monthly Delivery Summary */}
           <div>
-            <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#71717A]">
+            <h3 className="text-[11px] font-bold uppercase tracking-wider text-[var(--av-muted)]">
               Delivery Count &amp; Gallon In/Out Summary
             </h3>
-            <div className="mt-2.5 grid gap-3 sm:grid-cols-3 text-xs">
+            <div className="mt-2.5 grid gap-3 text-xs sm:grid-cols-3">
               {(
                 [
                   { label: "Today", stat: liveTally.deliveryStats.today },
@@ -198,15 +208,15 @@ export function ShiftClosingTab({
               ).map(({ label, stat }) => (
                 <div
                   key={label}
-                  className="rounded-2xl border border-[#E8E8EC] bg-white p-3.5"
+                  className="rounded-2xl border border-[var(--av-border)] bg-[var(--av-surface)] p-3.5"
                 >
-                  <div className="text-[11px] font-semibold text-[#71717A]">
+                  <div className="text-[11px] font-semibold text-[var(--av-muted)]">
                     {label}
                   </div>
-                  <div className="mt-1 font-bold text-[#111111] tabular-nums">
+                  <div className="mt-1 font-bold text-[var(--av-ink)] tabular-nums">
                     {stat.count} · {formatPHP(stat.totalSales)}
                   </div>
-                  <div className="mt-0.5 text-[11px] text-[#71717A] tabular-nums">
+                  <div className="mt-0.5 text-[11px] text-[var(--av-muted)] tabular-nums">
                     {stat.gallonsOut} out · {stat.emptiesIn} in
                   </div>
                 </div>
@@ -221,23 +231,23 @@ export function ShiftClosingTab({
           className="av-card space-y-4 p-6 lg:col-span-5"
         >
           <div>
-            <h2 className="text-base font-bold text-[#111111]">
+            <h2 className="text-base font-bold text-[var(--av-ink)]">
               Count Cash &amp; Close Shift
             </h2>
-            <p className="text-xs font-normal text-[#71717A]">
+            <p className="text-xs font-normal text-[var(--av-muted)]">
               Enter actual cash counted to automatically check Exact, Over, or
               Short.
             </p>
           </div>
 
           <div>
-            <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+            <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
               Shift
             </label>
             <select
               value={shiftLabel}
               onChange={(e) => setShiftLabel(e.target.value)}
-              className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-xs font-semibold text-[#111111]"
+              className="av-input w-full rounded-2xl px-4 py-2.5 text-xs font-semibold"
             >
               <option value="Full Day">Full Day</option>
               <option value="Morning Shift">Morning Shift</option>
@@ -247,80 +257,83 @@ export function ShiftClosingTab({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
                 Starting Cash (₱)
               </label>
               <input
-                type="number"
-                min={0}
-                step="0.01"
-                required
+                type="text"
+                inputMode="decimal"
                 value={openingCashInput}
-                onChange={(e) => setOpeningCashInput(e.target.value)}
-                className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2.5 text-sm font-bold text-[#111111] tabular-nums"
+                onKeyDown={handleDecimalKeyDown}
+                onChange={(e) =>
+                  setOpeningCashInput(sanitizeDecimalInput(e.target.value))
+                }
+                placeholder="e.g. 500.00"
+                className="av-input w-full rounded-2xl px-3.5 py-2.5 text-sm font-bold tabular-nums"
               />
             </div>
 
             <div>
-              <label className="mb-1.5 block text-xs font-semibold text-[#111111]">
+              <label className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]">
                 Actual Cash Counted (₱)
               </label>
               <input
-                type="number"
-                min={0}
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 required
                 value={actualCashInput}
-                onChange={(e) => setActualCashInput(e.target.value)}
-                placeholder="Counted cash"
-                className="w-full rounded-2xl border border-[#111111] bg-white px-3.5 py-2.5 text-sm font-bold text-[#111111] tabular-nums focus:outline-none"
+                onKeyDown={handleDecimalKeyDown}
+                onChange={(e) =>
+                  setActualCashInput(sanitizeDecimalInput(e.target.value))
+                }
+                placeholder="Enter counted cash"
+                className="av-input w-full rounded-2xl border-[var(--av-ink)] bg-[var(--av-surface)] px-3.5 py-2.5 text-sm font-bold tabular-nums"
               />
             </div>
           </div>
 
-          {/* Monochrome Automated Over / Short / Exact Counter */}
-          <div className="space-y-2 rounded-2xl bg-[#F7F7F9] p-4 text-xs">
-            <div className="flex justify-between text-[#71717A]">
+          <div className="space-y-2 rounded-2xl bg-[var(--av-surface-subtle)] p-4 text-xs">
+            <div className="flex justify-between text-[var(--av-muted)]">
               <span>Expected Final Peso</span>
-              <span className="font-bold text-[#111111] tabular-nums">
+              <span className="font-bold text-[var(--av-ink)] tabular-nums">
                 {formatPHP(expectedCash)}
               </span>
             </div>
-            <div className="flex justify-between text-[#71717A]">
+            <div className="flex justify-between text-[var(--av-muted)]">
               <span>Actual Cash Counted</span>
-              <span className="font-bold text-[#111111] tabular-nums">
+              <span className="font-bold text-[var(--av-ink)] tabular-nums">
                 {hasActualCash ? formatPHP(actualCash) : "—"}
               </span>
             </div>
 
             {!hasActualCash ? (
-              <div className="mt-2 rounded-2xl border border-dashed border-[#D4D4D8] bg-white px-4 py-3 text-center text-xs text-[#71717A]">
+              <div className="mt-2 rounded-2xl border border-dashed border-[var(--av-border-strong)] bg-[var(--av-surface)] px-4 py-3 text-center text-xs text-[var(--av-muted)]">
                 Enter counted cash above to check Over / Short
               </div>
             ) : difference === 0 ? (
-              <div className="mt-2 rounded-2xl bg-[#111111] px-4 py-3 text-center text-white">
+              <div className="mt-2 rounded-2xl bg-[var(--av-accent)] px-4 py-3 text-center text-[var(--av-accent-ink)]">
                 <div className="text-xs font-bold uppercase tracking-wider">
                   Exact Cash · ₱0.00
                 </div>
-                <div className="mt-0.5 text-[11px] text-white/70">
+                <div className="mt-0.5 text-[11px] opacity-75">
                   Matches expected total exactly.
                 </div>
               </div>
             ) : difference > 0 ? (
-              <div className="mt-2 rounded-2xl border border-[#111111] bg-white px-4 py-3 text-center">
-                <div className="text-sm font-bold text-[#111111] tabular-nums">
+              <div className="mt-2 rounded-2xl border border-[var(--av-ink)] bg-[var(--av-surface)] px-4 py-3 text-center">
+                <div className="text-sm font-bold text-[var(--av-ink)] tabular-nums">
                   OVER by +{formatPHP(difference)}
                 </div>
-                <div className="mt-0.5 text-[11px] text-[#71717A]">
+                <div className="mt-0.5 text-[11px] text-[var(--av-muted)]">
                   Cash is MORE than expected.
                 </div>
               </div>
             ) : (
-              <div className="mt-2 rounded-2xl border-2 border-[#111111] bg-[#F2F2F4] px-4 py-3 text-center">
-                <div className="text-sm font-bold text-[#111111] tabular-nums">
+              <div className="mt-2 rounded-2xl border-2 border-[var(--av-ink)] bg-[var(--av-surface-hover)] px-4 py-3 text-center">
+                <div className="text-sm font-bold text-[var(--av-ink)] tabular-nums">
                   SHORT by {formatPHP(Math.abs(difference))}
                 </div>
-                <div className="mt-0.5 text-[11px] text-[#52525B]">
+                <div className="mt-0.5 text-[11px] text-[var(--av-ink-secondary)]">
                   Cash is LESS than expected.
                 </div>
               </div>
@@ -332,7 +345,7 @@ export function ShiftClosingTab({
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Remarks / reason (optional)"
-            className="w-full rounded-2xl border border-[#E4E4E7] bg-[#F8F8FA] px-4 py-2.5 text-xs text-[#111111]"
+            className="av-input w-full rounded-2xl px-4 py-2.5 text-xs"
           />
 
           {error && (
@@ -353,7 +366,7 @@ export function ShiftClosingTab({
           <button
             type="submit"
             disabled={submitting || !hasActualCash || data.schemaMissing}
-            className="w-full rounded-full bg-[#111111] px-5 py-3.5 text-sm font-semibold text-white transition hover:bg-black/85 disabled:cursor-not-allowed disabled:opacity-35"
+            className="av-btn-primary w-full rounded-full px-5 py-3.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-35"
           >
             {submitting ? "Saving..." : "Close Shift & Save Tally"}
           </button>
@@ -362,7 +375,7 @@ export function ShiftClosingTab({
 
       {/* Past Closed Shifts */}
       <div className="av-card p-6">
-        <h3 className="text-base font-bold text-[#111111]">
+        <h3 className="text-base font-bold text-[var(--av-ink)]">
           Past Closed Shifts ({history.length})
         </h3>
         <div className="mt-4 overflow-x-auto">
@@ -374,7 +387,7 @@ export function ShiftClosingTab({
           ) : (
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
-                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
+                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                   <th className="px-3 pb-1">Date &amp; Shift</th>
                   <th className="px-3 pb-1">Total Sales</th>
                   <th className="px-3 pb-1">Expected Cash</th>
@@ -388,23 +401,23 @@ export function ShiftClosingTab({
                 {history.map((h) => (
                   <tr
                     key={h.id}
-                    className="rounded-2xl bg-[#F7F7F9] font-medium"
+                    className="rounded-2xl bg-[var(--av-surface-subtle)] font-medium"
                   >
                     <td className="rounded-l-2xl px-3 py-3">
-                      <div className="font-bold text-[#111111]">
+                      <div className="font-bold text-[var(--av-ink)]">
                         {h.business_date} · {h.shift_label}
                       </div>
-                      <div className="text-[11px] font-normal text-[#71717A]">
+                      <div className="text-[11px] font-normal text-[var(--av-muted)]">
                         Closed {new Date(h.closed_at).toLocaleString()}
                       </div>
                     </td>
-                    <td className="px-3 py-3 font-bold text-[#111111] tabular-nums">
+                    <td className="px-3 py-3 font-bold text-[var(--av-ink)] tabular-nums">
                       {formatPHP(h.total_gross_sales)}
                     </td>
-                    <td className="px-3 py-3 text-[#52525B] tabular-nums">
+                    <td className="px-3 py-3 text-[var(--av-ink-secondary)] tabular-nums">
                       {formatPHP(h.expected_cash)}
                     </td>
-                    <td className="px-3 py-3 font-bold text-[#111111] tabular-nums">
+                    <td className="px-3 py-3 font-bold text-[var(--av-ink)] tabular-nums">
                       {formatPHP(h.actual_cash)}
                     </td>
                     <td className="px-3 py-3">
@@ -425,7 +438,7 @@ export function ShiftClosingTab({
                         }
                       />
                     </td>
-                    <td className="px-3 py-3 text-[#71717A]">
+                    <td className="px-3 py-3 text-[var(--av-muted)]">
                       {h.notes || "—"}
                     </td>
                     <td className="rounded-r-2xl py-3 pr-3 text-right">
@@ -433,7 +446,9 @@ export function ShiftClosingTab({
                         ariaLabel={`Actions for ${h.business_date} ${h.shift_label}`}
                         actions={[
                           {
-                            label: "Request Cash Count Fix",
+                            label: isElevatedActor
+                              ? "Adjust Cash Count"
+                              : "Request Cash Count Fix",
                             onClick: () =>
                               onRequestCorrection({
                                 entityType: "shift_closing",

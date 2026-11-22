@@ -1,17 +1,29 @@
 import { NextResponse } from "next/server";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import {
   createManagedUser,
   isValidRole,
   listManagedUsers,
+  requireActiveProfile,
 } from "@/backend/services/users";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const users = await listManagedUsers();
+    const { searchParams } = new URL(request.url);
+    const station = searchParams.get("station") || undefined;
+    const actor = await requireActiveProfile();
+    const users = await listManagedUsers(
+      actor,
+      actor.role === "superadmin" ? station : undefined
+    );
     return NextResponse.json({ users }, { status: 200 });
   } catch (error) {
-    return handleApiError(error);
+    return handleApiError(error, { route: "/api/users" });
   }
 }
 
@@ -38,13 +50,14 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          "Valid email, password (min 6 chars), and role (superadmin | owner | cashier | staff) are required",
+          "Valid email, password (at least 6 characters), and role are required",
       },
       { status: 400 }
     );
   }
 
   try {
+    const actor = await requireActiveProfile();
     const user = await createManagedUser({
       email: body.email,
       password: body.password,
@@ -57,8 +70,27 @@ export async function POST(request: Request) {
           : undefined,
     });
 
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: actor.id,
+        name: actor.full_name || actor.email,
+        email: actor.email,
+        role: actor.role,
+      },
+      stationOwnerId: user.owner_id ?? (user.role === "owner" ? user.id : null),
+      module: "accounts",
+      action: `Created ${user.role} account (${user.email})`,
+      controlLabel: "Create Account",
+      targetType: "account",
+      targetId: user.id,
+      targetLabel: user.email,
+      route: "/api/users",
+      ...meta,
+    });
+
     return NextResponse.json({ user }, { status: 201 });
   } catch (error) {
-    return handleApiError(error);
+    return handleApiError(error, { route: "/api/users" });
   }
 }

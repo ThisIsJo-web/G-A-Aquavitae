@@ -24,6 +24,7 @@ import { formatPHP, type OwnerDashboardSnapshot } from "./types";
 
 interface OwnerSupervisionTabProps {
   snapshot: OwnerDashboardSnapshot;
+  stationQuery: string;
   onDataChanged: () => Promise<void>;
 }
 
@@ -96,6 +97,7 @@ function summarizeSnapshot(
 
 export function OwnerSupervisionTab({
   snapshot,
+  stationQuery,
   onDataChanged,
 }: OwnerSupervisionTabProps) {
   const { corrections } = snapshot;
@@ -118,14 +120,17 @@ export function OwnerSupervisionTab({
     setFeedback(null);
     setBusyId(requestId);
     try {
-      const res = await fetch(`/api/owner/corrections/${requestId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          decision,
-          reviewerNote: notesById[requestId]?.trim() || undefined,
-        }),
-      });
+      const res = await fetch(
+        `/api/owner/corrections/${requestId}${stationQuery}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            decision,
+            reviewerNote: notesById[requestId]?.trim() || undefined,
+          }),
+        }
+      );
       const payload = (await res.json()) as { error?: string };
       if (!res.ok) {
         setFeedback({
@@ -144,7 +149,7 @@ export function OwnerSupervisionTab({
       });
       await onDataChanged();
     } catch {
-      setFeedback({ tone: "error", message: "Network error." });
+      setFeedback({ tone: "error", message: "Connection error." });
     } finally {
       setBusyId(null);
     }
@@ -155,7 +160,7 @@ export function OwnerSupervisionTab({
       {corrections.schemaMissing && (
         <NoticeBanner
           tone="info"
-          message="The correction_requests table is not applied yet. Run Section 12d of backend/db/schema.sql in Supabase SQL Editor to enable Owner Supervision approvals."
+          message="Owner Supervision is still being set up. Please contact your system administrator."
         />
       )}
 
@@ -167,7 +172,6 @@ export function OwnerSupervisionTab({
         />
       )}
 
-      {/* Quick Stats Row */}
       <div className="grid gap-4 sm:grid-cols-3">
         <QuickStatCard
           highlighted
@@ -179,31 +183,30 @@ export function OwnerSupervisionTab({
         <QuickStatCard
           label="Approved Fixes"
           value={corrections.approvedCount}
-          sublabel="Audited corrections applied"
+          sublabel="Corrections applied to records"
           icon={<CheckCircle2 className="h-5 w-5" />}
         />
         <QuickStatCard
           label="Rejected Requests"
           value={corrections.rejectedCount}
-          sublabel="Kept original cashier record"
+          sublabel="Kept original record"
           icon={<XCircle className="h-5 w-5" />}
         />
       </div>
 
-      {/* Queue Card */}
       <section className="av-card p-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h2 className="text-base font-bold tracking-tight text-[#111111]">
+            <h2 className="text-base font-bold tracking-tight text-[var(--av-ink)]">
               Cashier Correction Queue
             </h2>
-            <p className="mt-0.5 text-xs text-[#71717A]">
+            <p className="mt-0.5 text-xs text-[var(--av-muted)]">
               Review payment fixes, delivery cancellations, vendo edits, and
-              closed shift adjustments with before/after audit trails
+              closed shift adjustments
             </p>
           </div>
 
-          <div className="inline-flex rounded-full bg-[#F2F2F4] p-1">
+          <div className="inline-flex rounded-full bg-[var(--av-surface-subtle)] p-1">
             {(["pending", "approved", "rejected", "all"] as const).map((st) => (
               <button
                 key={st}
@@ -211,8 +214,8 @@ export function OwnerSupervisionTab({
                 onClick={() => setFilter(st)}
                 className={`rounded-full px-3.5 py-1.5 text-xs font-semibold capitalize transition ${
                   filter === st
-                    ? "bg-[#111111] text-white"
-                    : "text-[#52525B] hover:text-[#111111]"
+                    ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                    : "text-[var(--av-muted)] hover:text-[var(--av-ink)]"
                 }`}
               >
                 {st}
@@ -232,7 +235,7 @@ export function OwnerSupervisionTab({
               }
               description={
                 filter === "pending"
-                  ? "When a cashier flags an error that needs Owner Supervision, it appears here for your approval."
+                  ? "When a cashier flags an error that needs approval, it appears here."
                   : "Try switching filter tabs above."
               }
             />
@@ -244,7 +247,7 @@ export function OwnerSupervisionTab({
               return (
                 <div
                   key={req.id}
-                  className="rounded-[22px] border border-[#E8E8EC] bg-[#F8F8FA] p-5"
+                  className="rounded-[22px] border border-[var(--av-border)] bg-[var(--av-surface-subtle)] p-5"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-1">
@@ -264,17 +267,17 @@ export function OwnerSupervisionTab({
                                 ? "Approved & Applied"
                                 : "Rejected"
                             }
-                            tone={req.status === "approved" ? "soft" : "outline"}
+                            tone={req.status === "approved" ? "green" : "outline"}
                             dot
                           />
                         )}
                       </div>
-                      <h3 className="text-sm font-bold text-[#111111]">
+                      <h3 className="text-sm font-bold text-[var(--av-ink)]">
                         {req.entity_label}
                       </h3>
-                      <p className="text-[11px] text-[#71717A]">
+                      <p className="text-[11px] text-[var(--av-muted)]">
                         Requested by{" "}
-                        <span className="font-semibold text-[#111111]">
+                        <span className="font-semibold text-[var(--av-ink)]">
                           {req.requester_name}
                         </span>{" "}
                         · {new Date(req.created_at).toLocaleString()}
@@ -282,20 +285,19 @@ export function OwnerSupervisionTab({
                     </div>
                   </div>
 
-                  {/* Before vs Proposed Comparison */}
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-2xl bg-white p-3.5 ring-1 ring-[#ECECEF]">
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-[#71717A]">
+                    <div className="rounded-2xl bg-[var(--av-surface)] p-3.5 ring-1 ring-[var(--av-border)]">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                         Current Record (Before)
                       </div>
-                      <div className="mt-1 text-xs font-bold text-[#111111] tabular-nums">
+                      <div className="mt-1 text-xs font-bold text-[var(--av-ink)] tabular-nums">
                         {summarizeSnapshot(req, "before")}
                       </div>
                     </div>
 
-                    <div className="rounded-2xl bg-[#111111] p-3.5 text-white">
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-white/70">
-                        Requested Correction (Proposed)
+                    <div className="rounded-2xl bg-[var(--av-accent)] p-3.5 text-[var(--av-accent-ink)]">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider opacity-75">
+                        Requested Change
                       </div>
                       <div className="mt-1 text-xs font-bold tabular-nums">
                         {summarizeSnapshot(req, "proposed")}
@@ -303,17 +305,15 @@ export function OwnerSupervisionTab({
                     </div>
                   </div>
 
-                  {/* Cashier Reason */}
-                  <div className="mt-3 rounded-2xl bg-white px-4 py-3 text-xs ring-1 ring-[#ECECEF]">
-                    <span className="font-semibold text-[#71717A]">
-                      Cashier Reason:{" "}
+                  <div className="mt-3 rounded-2xl bg-[var(--av-surface)] px-4 py-3 text-xs ring-1 ring-[var(--av-border)]">
+                    <span className="font-semibold text-[var(--av-muted)]">
+                      Reason:{" "}
                     </span>
-                    <span className="font-medium text-[#111111]">
+                    <span className="font-medium text-[var(--av-ink)]">
                       {req.reason}
                     </span>
                   </div>
 
-                  {/* Owner Action Controls or Final Audit Note */}
                   {isPending ? (
                     <div className="mt-4 flex flex-wrap items-center gap-3">
                       <input
@@ -326,7 +326,7 @@ export function OwnerSupervisionTab({
                           }))
                         }
                         placeholder="Owner note for cashier (optional)"
-                        className="min-w-[220px] flex-1 rounded-full border border-[#E4E4E7] bg-white px-4 py-2 text-xs text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:outline-none"
+                        className="av-input min-w-[220px] flex-1 rounded-full bg-[var(--av-surface)] px-4 py-2 text-xs"
                       />
 
                       <div className="flex items-center gap-2">
@@ -334,7 +334,7 @@ export function OwnerSupervisionTab({
                           type="button"
                           disabled={isBusy}
                           onClick={() => void handleDecision(req.id, "rejected")}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-[#D4D4D8] bg-white px-4 py-2 text-xs font-semibold text-[#111111] transition hover:bg-[#EFEFF2] disabled:opacity-50"
+                          className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition disabled:opacity-50"
                         >
                           <X className="h-3.5 w-3.5" />
                           Reject
@@ -343,7 +343,7 @@ export function OwnerSupervisionTab({
                           type="button"
                           disabled={isBusy}
                           onClick={() => void handleDecision(req.id, "approved")}
-                          className="inline-flex items-center gap-1.5 rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold text-white transition hover:bg-black/85 disabled:opacity-50"
+                          className="av-btn-primary inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition disabled:opacity-50"
                         >
                           <Check className="h-3.5 w-3.5" />
                           {isBusy ? "Applying..." : "Approve & Apply"}
@@ -351,17 +351,17 @@ export function OwnerSupervisionTab({
                       </div>
                     </div>
                   ) : (
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#71717A]">
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--av-muted)]">
                       <span>
                         {req.reviewer_note ? (
                           <>
-                            <strong className="text-[#111111]">
-                              Owner Note:
+                            <strong className="text-[var(--av-ink)]">
+                              Note:
                             </strong>{" "}
                             {req.reviewer_note}
                           </>
                         ) : (
-                          "No additional owner note"
+                          "No additional note"
                         )}
                       </span>
                       {req.reviewed_at && (

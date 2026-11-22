@@ -16,6 +16,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  addIsoDaysClient,
+  clampIsoDate,
+} from "@/app/_components/ui/input-validation";
+import {
   EmptyState,
   NoticeBanner,
   RowActionMenu,
@@ -29,7 +33,9 @@ import type {
 } from "@/backend/services/audit-ledger";
 
 interface OwnerAuditTabProps {
-  initialLedger: OwnerAuditLedgerResult;
+  todayDate: string;
+  stationAmpParam: string;
+  stationQueryParam: string;
   refreshSignal: number;
   onTotalEntriesChange?: (total: number) => void;
 }
@@ -59,7 +65,7 @@ function moduleLabel(mod: string): string {
     case "supervision":
       return "Supervision";
     case "inventory":
-      return "Container";
+      return "Inventory";
     case "security":
       return "Security";
     default:
@@ -67,18 +73,76 @@ function moduleLabel(mod: string): string {
   }
 }
 
+function humanEventLabel(eventType: string): string {
+  const map: Record<string, string> = {
+    "pos.sale.created": "Walk-in Sale",
+    "pos.sale.voided": "Walk-in Voided",
+    "pos.sale.backfilled_voided": "Past Voided Sale",
+    "delivery.created": "Delivery Recorded",
+    "delivery.updated": "Delivery Updated",
+    "delivery.cancelled": "Delivery Cancelled",
+    "delivery.backfilled_cancelled": "Past Cancelled Delivery",
+    "vendo.collected": "Vendo Collection",
+    "expense.created": "Expense Added",
+    "expense.deleted": "Expense Removed",
+    "shift.closed": "Shift Closed",
+    "borrow.deposit_received": "Container Deposit",
+    "correction.requested": "Correction Requested",
+    "correction.direct_applied": "Direct Fix Applied",
+    "correction.approved": "Correction Approved",
+    "correction.rejected": "Correction Rejected",
+    "superadmin.audit_access": "Admin Inspection",
+  };
+  return map[eventType] ?? eventType.replace(/[._]/g, " ");
+}
+
+function humanFieldLabel(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function renderSnapshotPairs(snapshot: unknown) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return (
+      <p className="mt-2 text-xs text-[var(--av-muted)]">No previous values</p>
+    );
+  }
+  const entries = Object.entries(snapshot as Record<string, unknown>).filter(
+    ([, v]) => v !== null && v !== undefined && v !== ""
+  );
+  if (entries.length === 0) {
+    return <p className="mt-2 text-xs text-[var(--av-muted)]">None</p>;
+  }
+  return (
+    <dl className="mt-2 space-y-1.5 text-xs">
+      {entries.map(([k, v]) => (
+        <div key={k} className="flex items-center justify-between gap-3">
+          <dt className="text-[var(--av-muted)]">{humanFieldLabel(k)}</dt>
+          <dd className="font-semibold text-[var(--av-ink)] tabular-nums">
+            {typeof v === "object" ? JSON.stringify(v) : String(v)}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function OwnerAuditTab({
-  initialLedger,
+  todayDate,
+  stationAmpParam,
+  stationQueryParam,
   refreshSignal,
   onTotalEntriesChange,
 }: OwnerAuditTabProps) {
-  const [ledger, setLedger] = useState<OwnerAuditLedgerResult>(initialLedger);
-  const [fromDate, setFromDate] = useState(initialLedger.fromDate);
-  const [toDate, setToDate] = useState(initialLedger.toDate);
+  const minAllowedDate = addIsoDaysClient(todayDate, -365);
+  const [ledger, setLedger] = useState<OwnerAuditLedgerResult | null>(null);
+  const [fromDate, setFromDate] = useState(addIsoDaysClient(todayDate, -29));
+  const [toDate, setToDate] = useState(todayDate);
   const [moduleFilter, setModuleFilter] = useState("all");
   const [bucketFilter, setBucketFilter] = useState<AuditBucketFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [backfilling, setBackfilling] = useState(false);
   const [inspected, setInspected] = useState<EnrichedAuditLogRow | null>(null);
   const [feedback, setFeedback] = useState<{
@@ -104,9 +168,9 @@ export function OwnerAuditTab({
       if (bkt !== "all") params.set("bucket", bkt);
       const q = (overrides?.q ?? searchQuery).trim();
       if (q) params.set("q", q);
-      return params.toString();
+      return `${params.toString()}${stationAmpParam}`;
     },
-    [bucketFilter, fromDate, moduleFilter, searchQuery, toDate]
+    [bucketFilter, fromDate, moduleFilter, searchQuery, stationAmpParam, toDate]
   );
 
   const fetchLedger = useCallback(
@@ -137,7 +201,7 @@ export function OwnerAuditTab({
           };
           setFeedback({
             tone: "error",
-            message: payload.error ?? "Failed to load audit ledger.",
+            message: payload.error ?? "Failed to load audit trail.",
           });
           return;
         }
@@ -148,15 +212,15 @@ export function OwnerAuditTab({
           setFeedback({
             tone: data.chain.verified ? "success" : "error",
             message: data.chain.verified
-              ? `SHA-256 Chain Verified: all ${data.chain.totalEntries} immutable entries intact with 0 gaps.`
-              : `Chain Integrity Warning: ${data.chain.brokenSeqNos.length} altered and ${data.chain.missingSeqNos.length} missing sequence numbers detected.`,
+              ? `All ${data.chain.totalEntries} financial records verified with no missing entries.`
+              : `Attention needed: ${data.chain.brokenSeqNos.length} changed and ${data.chain.missingSeqNos.length} missing records found.`,
           });
         }
       } catch (err) {
         if ((err as { name?: string })?.name !== "AbortError") {
           setFeedback({
             tone: "error",
-            message: "Network error while querying audit ledger.",
+            message: "Connection error while loading audit trail.",
           });
         }
       } finally {
@@ -168,37 +232,64 @@ export function OwnerAuditTab({
     [buildQueryString, onTotalEntriesChange]
   );
 
-  // Sync automatically whenever the Owner workspace's live 10s pulse detects a DB change
+  // Lazy-load on first mount & reload when live pulse updates
   useEffect(() => {
-    if (refreshSignal === 0) return;
+    let active = true;
     const controller = new AbortController();
-    async function silentReload() {
-      try {
-        const res = await fetch(`/api/owner/audit?${buildQueryString()}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!res.ok) return;
+    abortRef.current?.abort();
+    abortRef.current = controller;
+
+    const qs = buildQueryString();
+    fetch(`/api/owner/audit?${qs}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!active) return;
+        if (!res.ok) {
+          const payload = (await res.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          setFeedback({
+            tone: "error",
+            message: payload.error ?? "Failed to load audit trail.",
+          });
+          return;
+        }
         const data = (await res.json()) as OwnerAuditLedgerResult;
+        if (!active) return;
         setLedger(data);
         onTotalEntriesChange?.(data.chain.totalEntries);
-      } catch {
-        // Ignore abort
-      }
-    }
-    void silentReload();
-    return () => controller.abort();
-  }, [refreshSignal, buildQueryString, onTotalEntriesChange]);
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        if ((err as { name?: string })?.name !== "AbortError") {
+          setFeedback({
+            tone: "error",
+            message: "Connection error while loading audit trail.",
+          });
+        }
+      })
+      .finally(() => {
+        if (active && abortRef.current === controller) {
+          setLoading(false);
+        }
+      });
 
-  useEffect(() => {
-    return () => abortRef.current?.abort();
-  }, []);
+    return () => {
+      active = false;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal, stationAmpParam]);
 
   async function handleBackfill() {
     setFeedback(null);
     setBackfilling(true);
     try {
-      const res = await fetch("/api/owner/audit", { method: "POST" });
+      const res = await fetch(`/api/owner/audit${stationQueryParam}`, {
+        method: "POST",
+      });
       const payload = (await res.json()) as {
         importedCount?: number;
         ledger?: OwnerAuditLedgerResult;
@@ -207,7 +298,7 @@ export function OwnerAuditTab({
       if (!res.ok) {
         setFeedback({
           tone: "error",
-          message: payload.error ?? "Could not import pre-ledger records.",
+          message: payload.error ?? "Could not sync past records.",
         });
         return;
       }
@@ -216,32 +307,40 @@ export function OwnerAuditTab({
         tone: "success",
         message:
           payload.importedCount && payload.importedCount > 0
-            ? `Imported ${payload.importedCount} pre-ledger record(s) into the immutable SHA-256 audit chain.`
-            : "All existing station records are already in the audit ledger.",
+            ? `Synced ${payload.importedCount} past record(s) into your audit trail.`
+            : "All existing station records are already synced.",
       });
     } catch {
-      setFeedback({ tone: "error", message: "Network error during backfill." });
+      setFeedback({ tone: "error", message: "Connection error while syncing." });
     } finally {
       setBackfilling(false);
     }
   }
 
-  function copyHash(hash: string) {
-    void navigator.clipboard?.writeText(hash);
-    setFeedback({
-      tone: "info",
-      message: `Copied SHA-256 hash (${hash.slice(0, 16)}...) to clipboard.`,
-    });
-  }
-
   const exportQs = buildQueryString();
+
+  if (!ledger) {
+    return (
+      <div className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="h-32 animate-pulse rounded-[24px] border border-[var(--av-border)] bg-[var(--av-surface)]"
+            />
+          ))}
+        </div>
+        <div className="h-72 animate-pulse rounded-[24px] border border-[var(--av-border)] bg-[var(--av-surface)]" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       {ledger.schemaMissing && (
         <NoticeBanner
           tone="info"
-          message="The financial_audit_logs table is not created yet. Run Section 12e of backend/db/schema.sql in Supabase SQL Editor to activate the append-only centavo audit trail."
+          message="Financial audit trail is still being set up. Please contact your system administrator."
         />
       )}
 
@@ -257,16 +356,16 @@ export function OwnerAuditTab({
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <QuickStatCard
           highlighted
-          label="SHA-256 Chain"
+          label="Record Check"
           value={
             ledger.chain.verified
-              ? `Intact · #${ledger.chain.totalEntries}`
-              : "Tamper Alert"
+              ? `Verified · ${ledger.chain.totalEntries}`
+              : "Needs Review"
           }
           sublabel={
-            ledger.chain.latestHash
-              ? `Latest hash ${ledger.chain.latestHash.slice(0, 14)}…`
-              : "Append-only ledger ready"
+            ledger.chain.verified
+              ? "All recorded entries match"
+              : "Discrepancy detected in history"
           }
           icon={
             ledger.chain.verified ? (
@@ -287,7 +386,7 @@ export function OwnerAuditTab({
         <QuickStatCard
           label="GCash / Bank Net"
           value={fmtCents(ledger.periodTotals.digitalNetCentavos, true)}
-          sublabel="Exact centavo online movement"
+          sublabel="Total online movement"
           icon={<CreditCard className="h-5 w-5" />}
         />
 
@@ -299,11 +398,11 @@ export function OwnerAuditTab({
         />
       </div>
 
-      {/* Centavo Reconciliation Proof Bar */}
+      {/* Totals Match Bar */}
       {!ledger.schemaMissing && (
         <div className="av-card flex flex-wrap items-center justify-between gap-4 p-5">
           <div className="flex items-center gap-3.5">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#111111] text-white">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--av-accent)] text-[var(--av-accent-ink)]">
               {ledger.reconciliation.isBalanced ? (
                 <CheckCircle2 className="h-5 w-5" />
               ) : (
@@ -312,26 +411,25 @@ export function OwnerAuditTab({
             </span>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-bold text-[#111111]">
-                  Centavo Reconciliation Proof
+                <h2 className="text-sm font-bold text-[var(--av-ink)]">
+                  Totals Match
                 </h2>
                 <StatusChip
                   label={
                     ledger.reconciliation.isBalanced
-                      ? "Balanced · ₱0.00 Diff"
-                      : `Pre-Ledger Diff ${fmtCents(ledger.reconciliation.grossDiffCentavos, true)}`
+                      ? "Matched · ₱0.00 Diff"
+                      : `Difference ${fmtCents(ledger.reconciliation.grossDiffCentavos, true)}`
                   }
-                  tone={ledger.reconciliation.isBalanced ? "soft" : "solid"}
+                  tone={ledger.reconciliation.isBalanced ? "green" : "yellow"}
                   dot
                 />
               </div>
-              <p className="mt-0.5 text-xs text-[#71717A] tabular-nums">
-                Ledger Gross {fmtCents(ledger.reconciliation.ledgerGrossCentavos)}{" "}
-                vs. Operational{" "}
+              <p className="mt-0.5 text-xs text-[var(--av-muted)] tabular-nums">
+                Recorded Sales {fmtCents(ledger.reconciliation.ledgerGrossCentavos)}{" "}
+                vs. Station Total{" "}
                 {fmtCents(ledger.reconciliation.operationalGrossCentavos)} ·
-                Ledger Expenses{" "}
-                {fmtCents(ledger.reconciliation.ledgerExpenseCentavos)} vs.
-                Operational{" "}
+                Expenses{" "}
+                {fmtCents(ledger.reconciliation.ledgerExpenseCentavos)} vs.{" "}
                 {fmtCents(ledger.reconciliation.operationalExpenseCentavos)}
               </p>
             </div>
@@ -343,10 +441,10 @@ export function OwnerAuditTab({
                 type="button"
                 onClick={() => void handleBackfill()}
                 disabled={backfilling}
-                className="inline-flex items-center gap-1.5 rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold text-white transition hover:bg-black/85 disabled:opacity-50"
+                className="av-btn-primary inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition disabled:opacity-50"
               >
                 <History className="h-3.5 w-3.5" />
-                {backfilling ? "Importing..." : "Import Pre-Ledger Records"}
+                {backfilling ? "Syncing..." : "Sync Past Records"}
               </button>
             )}
 
@@ -354,10 +452,10 @@ export function OwnerAuditTab({
               type="button"
               onClick={() => void fetchLedger(undefined, true)}
               disabled={loading}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[#D4D4D8] bg-white px-4 py-2 text-xs font-semibold text-[#111111] transition hover:bg-[#F4F4F6] disabled:opacity-50"
+              className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition disabled:opacity-50"
             >
               <Lock className="h-3.5 w-3.5" />
-              {loading ? "Verifying..." : "Verify SHA-256 Chain"}
+              {loading ? "Checking..." : "Recheck Records"}
             </button>
           </div>
         </div>
@@ -367,7 +465,7 @@ export function OwnerAuditTab({
       <div className="av-card space-y-4 p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="relative min-w-[220px] flex-1 max-w-md">
-            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#A1A1AA]" />
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--av-subtle)]" />
             <input
               type="search"
               value={searchQuery}
@@ -375,39 +473,55 @@ export function OwnerAuditTab({
               onKeyDown={(e) => {
                 if (e.key === "Enter") void fetchLedger();
               }}
-              placeholder="Search #seq, receipt, customer, actor, or hash..."
-              className="w-full rounded-full border border-[#E4E4E7] bg-[#F8F8FA] py-2 pl-10 pr-4 text-xs font-medium text-[#111111] placeholder:text-[#A1A1AA] focus:border-[#111111] focus:bg-white focus:outline-none"
+              placeholder="Search receipt, customer, staff name, or date..."
+              className="av-input w-full rounded-full py-2 pl-10 pr-4 text-xs font-medium"
             />
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <input
               type="date"
+              min={minAllowedDate}
+              max={toDate}
               value={fromDate}
               aria-label="From date"
               onChange={(e) => {
-                setFromDate(e.target.value);
-                void fetchLedger({ from: e.target.value });
+                const next = clampIsoDate(
+                  e.target.value,
+                  minAllowedDate,
+                  toDate
+                );
+                setFromDate(next);
+                void fetchLedger({ from: next });
               }}
-              className="rounded-full border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-xs font-semibold tabular-nums text-[#111111]"
+              className="av-input rounded-full px-3.5 py-2 text-xs font-semibold tabular-nums"
             />
-            <span className="text-xs font-semibold text-[#71717A]">to</span>
+            <span className="text-xs font-semibold text-[var(--av-muted)]">
+              to
+            </span>
             <input
               type="date"
+              min={fromDate}
+              max={todayDate}
               value={toDate}
               aria-label="To date"
               onChange={(e) => {
-                setToDate(e.target.value);
-                void fetchLedger({ to: e.target.value });
+                const next = clampIsoDate(
+                  e.target.value,
+                  fromDate,
+                  todayDate
+                );
+                setToDate(next);
+                void fetchLedger({ to: next });
               }}
-              className="rounded-full border border-[#E4E4E7] bg-[#F8F8FA] px-3.5 py-2 text-xs font-semibold tabular-nums text-[#111111]"
+              className="av-input rounded-full px-3.5 py-2 text-xs font-semibold tabular-nums"
             />
 
             <button
               type="button"
               onClick={() => void fetchLedger()}
               disabled={loading}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[#111111] px-4 py-2 text-xs font-semibold text-white transition hover:bg-black/85 disabled:opacity-50"
+              className="av-btn-primary inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition disabled:opacity-50"
             >
               <RefreshCw
                 className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
@@ -417,18 +531,17 @@ export function OwnerAuditTab({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#ECECEF] pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--av-border)] pt-4">
           <div className="flex flex-wrap items-center gap-1.5">
             {(
               [
-                { id: "all", label: "All Modules" },
+                { id: "all", label: "All Areas" },
                 { id: "pos", label: "Walk-in POS" },
                 { id: "delivery", label: "Deliveries" },
                 { id: "vendo", label: "Vendo" },
                 { id: "expense", label: "Expenses" },
                 { id: "shift", label: "Shifts" },
                 { id: "supervision", label: "Supervision" },
-                { id: "security", label: "Security" },
               ] as const
             ).map((m) => (
               <button
@@ -440,8 +553,8 @@ export function OwnerAuditTab({
                 }}
                 className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
                   moduleFilter === m.id
-                    ? "bg-[#111111] text-white"
-                    : "border border-[#E4E4E7] bg-white text-[#52525B] hover:bg-[#F4F4F6]"
+                    ? "bg-[var(--av-accent)] text-[var(--av-accent-ink)]"
+                    : "border border-[var(--av-border-strong)] bg-[var(--av-surface)] text-[var(--av-ink-secondary)] hover:bg-[var(--av-surface-subtle)]"
                 }`}
               >
                 {m.label}
@@ -450,40 +563,40 @@ export function OwnerAuditTab({
 
             <select
               value={bucketFilter}
-              aria-label="Filter by financial impact"
+              aria-label="Filter by payment type"
               onChange={(e) => {
                 const next = e.target.value as AuditBucketFilter;
                 setBucketFilter(next);
                 void fetchLedger({ bucket: next });
               }}
-              className="rounded-full border border-[#E4E4E7] bg-white px-3.5 py-1.5 text-xs font-semibold text-[#111111] focus:border-[#111111] focus:outline-none"
+              className="av-input rounded-full bg-[var(--av-surface)] px-3.5 py-1.5 text-xs font-semibold"
             >
-              <option value="all">All Impacts</option>
-              <option value="cash">Cash Drawer Only</option>
+              <option value="all">All Types</option>
+              <option value="cash">Cash Only</option>
               <option value="digital">GCash / Bank Only</option>
               <option value="utang">Utang / Unpaid Only</option>
               <option value="expense">Expenses Only</option>
-              <option value="exceptions">Voids, Fixes &amp; Alerts</option>
+              <option value="exceptions">Voids &amp; Corrections</option>
             </select>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <a
               href={`/api/owner/audit/export?${exportQs}&format=csv`}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[#111111] px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-black/85"
+              className="av-btn-primary inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition"
             >
               <Download className="h-3.5 w-3.5" />
               CSV
             </a>
             <a
               href={`/api/owner/audit/export?${exportQs}&format=txt`}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[#D4D4D8] bg-white px-3.5 py-1.5 text-xs font-semibold text-[#111111] transition hover:bg-[#F4F4F6]"
+              className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition"
             >
               TXT
             </a>
             <a
               href={`/api/owner/audit/export?${exportQs}&format=json`}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[#D4D4D8] bg-white px-3.5 py-1.5 text-xs font-semibold text-[#111111] transition hover:bg-[#F4F4F6]"
+              className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition"
             >
               JSON
             </a>
@@ -491,32 +604,25 @@ export function OwnerAuditTab({
         </div>
       </div>
 
-      {/* Forensic Ledger Table */}
+      {/* Financial Audit Trail Card — "Immutable" and description below removed (Item #9) */}
       <section className="av-card p-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-base font-bold tracking-tight text-[#111111]">
-              Immutable Financial Audit Trail ({ledger.entries.length}
-              {ledger.totalMatching > ledger.entries.length
-                ? ` of ${ledger.totalMatching}`
-                : ""}
-              )
-            </h2>
-            <p className="text-xs text-[#71717A]">
-              Append-only database trigger enforced · Every peso &amp; centavo
-              movement is SHA-256 hash-chained
-            </p>
-          </div>
-          <StatusChip label="Append-Only · Read Only" tone="outline" dot />
+          <h2 className="text-base font-bold tracking-tight text-[var(--av-ink)]">
+            Financial Audit Trail ({ledger.entries.length}
+            {ledger.totalMatching > ledger.entries.length
+              ? ` of ${ledger.totalMatching}`
+              : ""}
+            )
+          </h2>
         </div>
 
         {ledger.entries.length === 0 ? (
           <EmptyState
             icon={<Lock className="h-5 w-5" />}
-            title="No audit entries in this window"
+            title="No audit entries in this date range"
             description={
               ledger.hasPreLedgerRecords
-                ? 'Click "Import Pre-Ledger Records" above to bring existing station sales into the audit chain, or record a new transaction.'
+                ? 'Click "Sync Past Records" above to include earlier station sales, or record a new transaction.'
                 : "Every new Walk-in sale, delivery, vendo count, expense, void, and approval will appear here automatically."
             }
           />
@@ -524,35 +630,35 @@ export function OwnerAuditTab({
           <div className="overflow-x-auto">
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
-                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
-                  <th className="px-3 py-2">#Seq</th>
-                  <th className="px-3 py-2">Time &amp; Actor</th>
-                  <th className="px-3 py-2">Module / Event</th>
+                <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
+                  <th className="px-3 py-2">#</th>
+                  <th className="px-3 py-2">Time &amp; User</th>
+                  <th className="px-3 py-2">Area / Activity</th>
                   <th className="px-3 py-2">Details</th>
-                  <th className="px-3 py-2 text-right">Cash Δ</th>
-                  <th className="px-3 py-2 text-right">GCash Δ</th>
-                  <th className="px-3 py-2 text-right">Utang Δ</th>
-                  <th className="px-3 py-2 text-right">Exp Δ</th>
-                  <th className="w-12 px-3 py-2 text-right">Inspect</th>
+                  <th className="px-3 py-2 text-right">Cash</th>
+                  <th className="px-3 py-2 text-right">GCash</th>
+                  <th className="px-3 py-2 text-right">Utang</th>
+                  <th className="px-3 py-2 text-right">Expense</th>
+                  <th className="w-12 px-3 py-2 text-right">View</th>
                 </tr>
               </thead>
               <tbody>
                 {ledger.entries.map((row) => (
                   <tr
                     key={row.id}
-                    className="bg-[#F8F8FA] font-medium text-[#111111] transition hover:bg-[#EFEFF2]"
+                    className="bg-[var(--av-surface-subtle)] font-medium text-[var(--av-ink)] transition hover:bg-[var(--av-surface-hover)]"
                   >
                     <td className="rounded-l-2xl whitespace-nowrap px-3 py-3.5 font-bold tabular-nums">
                       #{row.seq_no}
                     </td>
                     <td className="whitespace-nowrap px-3 py-3.5">
-                      <div className="font-semibold text-[#111111]">
+                      <div className="font-semibold text-[var(--av-ink)]">
                         {row.actor_name}
                       </div>
-                      <div className="text-[11px] font-normal text-[#71717A] tabular-nums">
+                      <div className="text-[11px] font-normal text-[var(--av-muted)] tabular-nums">
                         {row.business_date} ·{" "}
                         {new Date(row.created_at).toLocaleTimeString()} ·{" "}
-                        <span className="uppercase">{row.actor_role}</span>
+                        <span className="capitalize">{row.actor_role}</span>
                       </div>
                     </td>
                     <td className="whitespace-nowrap px-3 py-3.5">
@@ -566,15 +672,15 @@ export function OwnerAuditTab({
                             : "outline"
                         }
                       />
-                      <div className="mt-1 text-[10px] font-mono text-[#71717A]">
-                        {row.event_type}
+                      <div className="mt-1 text-[11px] text-[var(--av-muted)]">
+                        {humanEventLabel(row.event_type)}
                       </div>
                     </td>
                     <td className="max-w-xs px-3 py-3.5">
-                      <div className="truncate font-semibold text-[#111111]">
+                      <div className="truncate font-semibold text-[var(--av-ink)]">
                         {row.reference_label}
                       </div>
-                      <div className="line-clamp-2 text-[11px] font-normal text-[#52525B]">
+                      <div className="line-clamp-2 text-[11px] font-normal text-[var(--av-ink-secondary)]">
                         {row.summary}
                       </div>
                     </td>
@@ -582,41 +688,45 @@ export function OwnerAuditTab({
                       {row.cash_delta_centavos !== 0 ? (
                         fmtCents(row.cash_delta_centavos, true)
                       ) : (
-                        <span className="font-normal text-[#A1A1AA]">—</span>
+                        <span className="font-normal text-[var(--av-subtle)]">
+                          —
+                        </span>
                       )}
                     </td>
                     <td className="whitespace-nowrap px-3 py-3.5 text-right font-bold tabular-nums">
                       {row.digital_delta_centavos !== 0 ? (
                         fmtCents(row.digital_delta_centavos, true)
                       ) : (
-                        <span className="font-normal text-[#A1A1AA]">—</span>
+                        <span className="font-normal text-[var(--av-subtle)]">
+                          —
+                        </span>
                       )}
                     </td>
                     <td className="whitespace-nowrap px-3 py-3.5 text-right font-bold tabular-nums">
                       {row.utang_delta_centavos !== 0 ? (
                         fmtCents(row.utang_delta_centavos, true)
                       ) : (
-                        <span className="font-normal text-[#A1A1AA]">—</span>
+                        <span className="font-normal text-[var(--av-subtle)]">
+                          —
+                        </span>
                       )}
                     </td>
                     <td className="whitespace-nowrap px-3 py-3.5 text-right font-bold tabular-nums">
                       {row.expense_delta_centavos !== 0 ? (
                         fmtCents(row.expense_delta_centavos, true)
                       ) : (
-                        <span className="font-normal text-[#A1A1AA]">—</span>
+                        <span className="font-normal text-[var(--av-subtle)]">
+                          —
+                        </span>
                       )}
                     </td>
                     <td className="rounded-r-2xl px-3 py-3.5 text-right">
                       <RowActionMenu
-                        ariaLabel={`Inspect audit entry #${row.seq_no}`}
+                        ariaLabel={`View details for entry #${row.seq_no}`}
                         actions={[
                           {
-                            label: "Inspect Diff & Hash",
+                            label: "View Details",
                             onClick: () => setInspected(row),
-                          },
-                          {
-                            label: "Copy SHA-256 Hash",
-                            onClick: () => copyHash(row.entry_hash),
                           },
                         ]}
                       />
@@ -629,10 +739,10 @@ export function OwnerAuditTab({
         )}
       </section>
 
-      {/* Forensic Diff Inspector Modal */}
+      {/* Plain-English Details Modal */}
       {inspected && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[1px]">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[28px] border border-[#E5E5EA] bg-white p-6 shadow-[0_24px_60px_rgba(0,0,0,0.2)]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[1px]">
+          <div className="av-card max-h-[90vh] w-full max-w-2xl overflow-y-auto p-6 shadow-[0_24px_60px_rgba(0,0,0,0.28)]">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -641,14 +751,14 @@ export function OwnerAuditTab({
                     label={moduleLabel(inspected.module)}
                     tone="outline"
                   />
-                  <span className="font-mono text-[11px] text-[#71717A]">
-                    {inspected.event_type}
+                  <span className="text-xs font-semibold text-[var(--av-muted)]">
+                    {humanEventLabel(inspected.event_type)}
                   </span>
                 </div>
-                <h3 className="mt-2 text-lg font-bold text-[#111111]">
+                <h3 className="mt-2 text-lg font-bold text-[var(--av-ink)]">
                   {inspected.reference_label}
                 </h3>
-                <p className="text-xs text-[#71717A]">
+                <p className="text-xs text-[var(--av-muted)]">
                   {inspected.actor_name} ({inspected.actor_role}) ·{" "}
                   {new Date(inspected.created_at).toLocaleString()}
                 </p>
@@ -656,105 +766,53 @@ export function OwnerAuditTab({
               <button
                 type="button"
                 onClick={() => setInspected(null)}
-                aria-label="Close inspector"
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-[#F2F2F4] text-[#111111] hover:bg-[#E4E4E7]"
+                aria-label="Close details"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--av-surface-subtle)] text-[var(--av-ink)] hover:bg-[var(--av-surface-hover)]"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <p className="mt-4 rounded-2xl bg-[#F7F7F9] px-4 py-3 text-xs font-medium text-[#111111]">
+            <p className="mt-4 rounded-2xl bg-[var(--av-surface-subtle)] px-4 py-3 text-xs font-medium text-[var(--av-ink)]">
               {inspected.summary}
             </p>
 
-            {/* Exact Centavo Impact Grid */}
+            {/* Impact Summary */}
             <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-5">
               {[
-                { label: "Cash Δ", val: inspected.cash_delta_centavos },
-                { label: "GCash Δ", val: inspected.digital_delta_centavos },
-                { label: "Utang Δ", val: inspected.utang_delta_centavos },
-                { label: "Expense Δ", val: inspected.expense_delta_centavos },
-                { label: "Gross Δ", val: inspected.gross_sales_delta_centavos },
+                { label: "Cash", val: inspected.cash_delta_centavos },
+                { label: "GCash", val: inspected.digital_delta_centavos },
+                { label: "Utang", val: inspected.utang_delta_centavos },
+                { label: "Expense", val: inspected.expense_delta_centavos },
+                { label: "Total Sales", val: inspected.gross_sales_delta_centavos },
               ].map((cell) => (
                 <div
                   key={cell.label}
-                  className="rounded-2xl bg-[#F8F8FA] p-3 text-center"
+                  className="rounded-2xl bg-[var(--av-surface-subtle)] p-3 text-center"
                 >
-                  <div className="text-[10px] font-semibold uppercase tracking-wider text-[#71717A]">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
                     {cell.label}
                   </div>
-                  <div className="mt-1 text-xs font-bold tabular-nums text-[#111111]">
+                  <div className="mt-1 text-xs font-bold tabular-nums text-[var(--av-ink)]">
                     {fmtCents(cell.val, true)}
-                  </div>
-                  <div className="text-[10px] tabular-nums text-[#A1A1AA]">
-                    {cell.val}¢
                   </div>
                 </div>
               ))}
             </div>
 
-            {/* Before vs After Snapshots */}
+            {/* Before vs After Readable Summary */}
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-2xl border border-[#ECECEF] bg-[#F8F8FA] p-4">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-[#71717A]">
-                  Before Snapshot
+              <div className="rounded-2xl border border-[var(--av-border)] bg-[var(--av-surface-subtle)] p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--av-muted)]">
+                  Before
                 </div>
-                <pre className="mt-2 overflow-x-auto text-[11px] font-mono text-[#111111]">
-                  {inspected.before_snapshot
-                    ? JSON.stringify(inspected.before_snapshot, null, 2)
-                    : "null (new record)"}
-                </pre>
+                {renderSnapshotPairs(inspected.before_snapshot)}
               </div>
-              <div className="rounded-2xl border border-[#ECECEF] bg-[#F8F8FA] p-4">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-[#71717A]">
-                  After Snapshot
+              <div className="rounded-2xl border border-[var(--av-border)] bg-[var(--av-surface-subtle)] p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--av-muted)]">
+                  After
                 </div>
-                <pre className="mt-2 overflow-x-auto text-[11px] font-mono text-[#111111]">
-                  {inspected.after_snapshot
-                    ? JSON.stringify(inspected.after_snapshot, null, 2)
-                    : "null (deleted)"}
-                </pre>
-              </div>
-            </div>
-
-            {/* Metadata & Cryptographic Hash Chain Proof */}
-            <div className="mt-4 space-y-3">
-              {inspected.metadata &&
-                Object.keys(inspected.metadata as Record<string, unknown>)
-                  .length > 0 && (
-                  <div className="rounded-2xl border border-[#ECECEF] bg-[#F8F8FA] p-4">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#71717A]">
-                      Forensic Metadata (Discounts, Tendered, Change, Items)
-                    </div>
-                    <pre className="mt-2 overflow-x-auto text-[11px] font-mono text-[#111111]">
-                      {JSON.stringify(inspected.metadata, null, 2)}
-                    </pre>
-                  </div>
-                )}
-
-              <div className="rounded-2xl bg-[#111111] p-4 text-white">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-white/70">
-                    SHA-256 Cryptographic Chain Proof
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => copyHash(inspected.entry_hash)}
-                    className="rounded-full bg-white/15 px-3 py-1 text-[10px] font-semibold text-white hover:bg-white/25"
-                  >
-                    Copy Entry Hash
-                  </button>
-                </div>
-                <div className="mt-2 space-y-1 font-mono text-[11px] break-all">
-                  <div>
-                    <span className="text-white/60">ENTRY: </span>
-                    {inspected.entry_hash}
-                  </div>
-                  <div>
-                    <span className="text-white/60">PREV : </span>
-                    {inspected.prev_hash}
-                  </div>
-                </div>
+                {renderSnapshotPairs(inspected.after_snapshot)}
               </div>
             </div>
           </div>

@@ -10,16 +10,29 @@ import {
 } from "@/backend/services/audit-ledger";
 import {
   getDeliveriesOverview,
+  type DeliveriesOverviewResult,
   type PeriodDeliveryTally,
 } from "@/backend/services/cashier/deliveries";
-import { listPosOverview } from "@/backend/services/cashier/pos";
 import {
+  listPosOverview,
+  type PosOverviewResult,
+} from "@/backend/services/cashier/pos";
+import {
+  assertOperationalDateAllowed,
+  ensureStationDefaults,
   isMissingCashierSchemaError,
   roundMoney,
   sanitizeBusinessDate,
   toNumber,
 } from "@/backend/services/cashier/shared";
-import { getVendoOverview } from "@/backend/services/cashier/vendo";
+import {
+  getVendoOverview,
+  type VendoOverviewResult,
+} from "@/backend/services/cashier/vendo";
+import {
+  listCorrectionRequests,
+  type CorrectionRequestsOverview,
+} from "@/backend/services/corrections";
 
 export type ShiftClosingRow =
   Database["public"]["Tables"]["shift_closings"]["Row"];
@@ -51,31 +64,20 @@ export interface DailyShiftTallyResult {
   history: ShiftClosingRow[];
 }
 
-export async function getDailyShiftTally(
-  ownerId: string,
-  businessDateInput?: string
-): Promise<DailyShiftTallyResult> {
-  const businessDate = sanitizeBusinessDate(businessDateInput);
-  const admin = createSupabaseAdminClient();
-
-  const [pos, deliveries, vendo, historyRes] = await Promise.all([
-    listPosOverview(ownerId, businessDate),
-    getDeliveriesOverview(ownerId, businessDate),
-    getVendoOverview(ownerId, businessDate),
-    admin
-      .from("shift_closings")
-      .select("*")
-      .eq("owner_id", ownerId)
-      .order("business_date", { ascending: false })
-      .order("closed_at", { ascending: false })
-      .limit(30),
-  ]);
-
+export function buildDailyShiftTallyFromOverviews(params: {
+  businessDate: string;
+  pos: PosOverviewResult;
+  deliveries: DeliveriesOverviewResult;
+  vendo: VendoOverviewResult;
+  historyRows: ShiftClosingRow[];
+  historySchemaMissing?: boolean;
+}): DailyShiftTallyResult {
+  const { businessDate, pos, deliveries, vendo, historyRows } = params;
   const schemaMissing =
     pos.schemaMissing ||
     deliveries.schemaMissing ||
     vendo.schemaMissing ||
-    isMissingCashierSchemaError(historyRes.error);
+    Boolean(params.historySchemaMissing);
 
   const walkinCashSales = pos.summary.cashTotal;
   const walkinDigitalSales = pos.summary.digitalTotal;
@@ -97,7 +99,7 @@ export async function getDailyShiftTally(
     totalCashCollected + totalDigitalCollected
   );
 
-  const history: ShiftClosingRow[] = (historyRes.data ?? []).map((row) => ({
+  const history: ShiftClosingRow[] = historyRows.map((row) => ({
     ...row,
     opening_cash: toNumber(row.opening_cash),
     walkin_cash_sales: toNumber(row.walkin_cash_sales),
@@ -136,6 +138,90 @@ export async function getDailyShiftTally(
   };
 }
 
+export interface CashierWorkspaceSnapshot {
+  businessDate: string;
+  pos: PosOverviewResult;
+  deliveries: DeliveriesOverviewResult;
+  vendo: VendoOverviewResult;
+  shift: DailyShiftTallyResult;
+  corrections: CorrectionRequestsOverview;
+}
+
+/**
+ * Single-pass Cashier workspace loader: fetches POS, Deliveries, Vendo, Shift History,
+ * and Corrections ONCE in parallel and derives Shift Tally in memory (eliminates 2x DB load).
+ */
+export async function getCashierWorkspaceSnapshot(
+  ownerId: string,
+  businessDateInput?: string
+): Promise<CashierWorkspaceSnapshot> {
+  const businessDate = sanitizeBusinessDate(businessDateInput);
+  await ensureStationDefaults(ownerId);
+  const admin = createSupabaseAdminClient();
+
+  const [pos, deliveries, vendo, historyRes, corrections] = await Promise.all([
+    listPosOverview(ownerId, businessDate),
+    getDeliveriesOverview(ownerId, businessDate),
+    getVendoOverview(ownerId, businessDate),
+    admin
+      .from("shift_closings")
+      .select("*")
+      .eq("owner_id", ownerId)
+      .order("business_date", { ascending: false })
+      .order("closed_at", { ascending: false })
+      .limit(30),
+    listCorrectionRequests(ownerId, 40),
+  ]);
+
+  const shift = buildDailyShiftTallyFromOverviews({
+    businessDate,
+    pos,
+    deliveries,
+    vendo,
+    historyRows: historyRes.data ?? [],
+    historySchemaMissing: isMissingCashierSchemaError(historyRes.error),
+  });
+
+  return {
+    businessDate,
+    pos,
+    deliveries,
+    vendo,
+    shift,
+    corrections,
+  };
+}
+
+export async function getDailyShiftTally(
+  ownerId: string,
+  businessDateInput?: string
+): Promise<DailyShiftTallyResult> {
+  const businessDate = sanitizeBusinessDate(businessDateInput);
+  const admin = createSupabaseAdminClient();
+
+  const [pos, deliveries, vendo, historyRes] = await Promise.all([
+    listPosOverview(ownerId, businessDate),
+    getDeliveriesOverview(ownerId, businessDate),
+    getVendoOverview(ownerId, businessDate),
+    admin
+      .from("shift_closings")
+      .select("*")
+      .eq("owner_id", ownerId)
+      .order("business_date", { ascending: false })
+      .order("closed_at", { ascending: false })
+      .limit(30),
+  ]);
+
+  return buildDailyShiftTallyFromOverviews({
+    businessDate,
+    pos,
+    deliveries,
+    vendo,
+    historyRows: historyRes.data ?? [],
+    historySchemaMissing: isMissingCashierSchemaError(historyRes.error),
+  });
+}
+
 export async function closeDailyShift(
   cashierId: string,
   ownerId: string,
@@ -147,7 +233,11 @@ export async function closeDailyShift(
     notes?: string;
   }
 ): Promise<ShiftClosingRow> {
-  const businessDate = sanitizeBusinessDate(input.businessDate);
+  const businessDate = assertOperationalDateAllowed(
+    input.businessDate,
+    7,
+    "Shift closing date"
+  );
   const openingCash = roundMoney(Math.max(0, Number(input.openingCash)));
   const actualCash = roundMoney(Math.max(0, Number(input.actualCash)));
 

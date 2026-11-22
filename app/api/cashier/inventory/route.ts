@@ -1,16 +1,25 @@
 import { NextResponse } from "next/server";
-import type { GallonType } from "@/backend/db/types";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
-import { requireCashierAccess } from "@/backend/services/auth-guards";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
+import { requireOwnerAccess } from "@/backend/services/auth-guards";
 import {
   getInventoryOverview,
   recordManualStockMovement,
 } from "@/backend/services/cashier/inventory";
 
+/**
+ * Inventory dashboard has moved to Owner/Superadmin ownership (Item #15).
+ */
 export async function GET(request: Request) {
   try {
-    const { tenantOwnerId } = await requireCashierAccess();
     const { searchParams } = new URL(request.url);
+    const { tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
     const date = searchParams.get("date") ?? undefined;
     const overview = await getInventoryOverview(tenantOwnerId, date);
 
@@ -24,7 +33,6 @@ export async function GET(request: Request) {
 }
 
 interface StockMovementBody {
-  gallonType?: unknown;
   movementType?: unknown;
   quantity?: unknown;
   notes?: unknown;
@@ -33,7 +41,10 @@ interface StockMovementBody {
 
 export async function POST(request: Request) {
   try {
-    const { profile, tenantOwnerId } = await requireCashierAccess();
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
     const body = await parseJsonBody<StockMovementBody>(request);
 
     if (
@@ -44,24 +55,34 @@ export async function POST(request: Request) {
       !Number.isFinite(Number(body.quantity))
     ) {
       return NextResponse.json(
-        {
-          error:
-            "Valid action (restock, damaged, or adjustment) and quantity are required",
-        },
+        { error: "Valid action and quantity are required" },
         { status: 400 }
       );
     }
 
-    const gallonType: GallonType =
-      body.gallonType === "round" ? "round" : "slim";
-
     const result = await recordManualStockMovement(profile.id, tenantOwnerId, {
-      gallonType,
       movementType: body.movementType,
       quantity: Number(body.quantity),
       notes: typeof body.notes === "string" ? body.notes : undefined,
       businessDate:
         typeof body.businessDate === "string" ? body.businessDate : undefined,
+    });
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "inventory",
+      action: `Updated Gallon Stock (${body.movementType})`,
+      controlLabel: "Update Stock",
+      targetLabel: `${Number(body.quantity)} gallon(s)`,
+      route: "/api/cashier/inventory",
+      ...meta,
     });
 
     return NextResponse.json(

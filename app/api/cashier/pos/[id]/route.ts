@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import { requireCashierAccess } from "@/backend/services/auth-guards";
 import { voidWalkInSale } from "@/backend/services/cashier/pos";
 
@@ -13,7 +18,10 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { profile, tenantOwnerId } = await requireCashierAccess();
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const { id } = await params;
     const body = await parseJsonBody<VoidSaleBody>(request);
 
@@ -30,6 +38,25 @@ export async function PATCH(
       typeof body.reason === "string" ? body.reason : undefined,
       profile.id
     );
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "pos",
+      action: `Voided Walk-in Sale (${sale.receipt_no})`,
+      controlLabel: "Void Sale",
+      targetType: "pos_sale",
+      targetId: sale.id,
+      targetLabel: sale.receipt_no,
+      route: "/api/cashier/pos/[id]",
+      ...meta,
+    });
 
     return NextResponse.json(
       { sale },

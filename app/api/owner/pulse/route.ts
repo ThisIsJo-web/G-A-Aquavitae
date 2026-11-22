@@ -3,10 +3,13 @@ import { handleApiError } from "@/backend/lib/http";
 import { requireOwnerAccess } from "@/backend/services/auth-guards";
 import { getOwnerPulse } from "@/backend/services/owner/dashboard";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const owner = await requireOwnerAccess();
-    const pulse = await getOwnerPulse(owner.id);
+    const { searchParams } = new URL(request.url);
+    const { tenantOwnerId } = await requireOwnerAccess(
+      searchParams.get("station")
+    );
+    const pulse = await getOwnerPulse(tenantOwnerId);
 
     return NextResponse.json(pulse, {
       status: 200,

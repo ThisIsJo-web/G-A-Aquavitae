@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { handleApiError, parseJsonBody } from "@/backend/lib/http";
+import {
+  extractRequestMeta,
+  handleApiError,
+  parseJsonBody,
+} from "@/backend/lib/http";
+import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import { requireCashierAccess } from "@/backend/services/auth-guards";
 import {
   createDeliveryCustomer,
@@ -7,9 +12,12 @@ import {
   updateDeliveryCustomer,
 } from "@/backend/services/cashier/deliveries";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const { tenantOwnerId } = await requireCashierAccess();
+    const { searchParams } = new URL(request.url);
+    const { tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const customers = await listDeliveryCustomers(tenantOwnerId);
 
     return NextResponse.json(
@@ -31,7 +39,10 @@ interface CreateCustomerBody {
 
 export async function POST(request: Request) {
   try {
-    const { tenantOwnerId } = await requireCashierAccess();
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const body = await parseJsonBody<CreateCustomerBody>(request);
 
     if (
@@ -58,6 +69,25 @@ export async function POST(request: Request) {
       notes: typeof body.notes === "string" ? body.notes : undefined,
     });
 
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "customers",
+      action: `Added Regular Customer (${customer.customer_name})`,
+      controlLabel: "Add Regular Customer",
+      targetType: "customer",
+      targetId: customer.id,
+      targetLabel: `${customer.customer_name} · ${customer.area}`,
+      route: "/api/cashier/customers",
+      ...meta,
+    });
+
     return NextResponse.json(
       { customer },
       { status: 201, headers: { "Cache-Control": "private, no-store" } }
@@ -79,12 +109,15 @@ interface UpdateCustomerBody {
 
 export async function PATCH(request: Request) {
   try {
-    const { tenantOwnerId } = await requireCashierAccess();
+    const { searchParams } = new URL(request.url);
+    const { profile, tenantOwnerId } = await requireCashierAccess(
+      searchParams.get("station")
+    );
     const body = await parseJsonBody<UpdateCustomerBody>(request);
 
     if (!body || typeof body.customerId !== "string") {
       return NextResponse.json(
-        { error: "customerId is required" },
+        { error: "Customer ID is required" },
         { status: 400 }
       );
     }
@@ -112,6 +145,25 @@ export async function PATCH(request: Request) {
             : undefined,
       }
     );
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: profile.id,
+        name: profile.full_name || profile.email,
+        email: profile.email,
+        role: profile.role,
+      },
+      stationOwnerId: tenantOwnerId,
+      module: "customers",
+      action: `Updated Regular Customer (${customer.customer_name})`,
+      controlLabel: "Update Customer",
+      targetType: "customer",
+      targetId: customer.id,
+      targetLabel: customer.customer_name,
+      route: "/api/cashier/customers",
+      ...meta,
+    });
 
     return NextResponse.json(
       { customer },
