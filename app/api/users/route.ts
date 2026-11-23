@@ -7,6 +7,7 @@ import {
 import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import {
   createManagedUser,
+  deleteManagedUsers,
   isValidRole,
   listManagedUsers,
   requireActiveProfile,
@@ -90,6 +91,54 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({ user }, { status: 201 });
+  } catch (error) {
+    return handleApiError(error, { route: "/api/users" });
+  }
+}
+
+interface BulkDeleteUsersBody {
+  ids?: unknown;
+}
+
+export async function DELETE(request: Request) {
+  const body = await parseJsonBody<BulkDeleteUsersBody>(request);
+  const ids = Array.isArray(body?.ids)
+    ? body.ids.filter((item): item is string => typeof item === "string")
+    : [];
+
+  if (ids.length === 0) {
+    return NextResponse.json(
+      { error: "Select at least one account to delete." },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const actor = await requireActiveProfile();
+    const { deletedCount, deletedEmails } = await deleteManagedUsers(ids);
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: actor.id,
+        name: actor.full_name || actor.email,
+        email: actor.email,
+        role: actor.role,
+      },
+      module: "accounts",
+      action: `Deleted ${deletedCount} user account${deletedCount === 1 ? "" : "s"}`,
+      controlLabel: "Confirm Delete",
+      targetType: "account",
+      targetLabel: deletedEmails.slice(0, 3).join(", "),
+      route: "/api/users",
+      details: { deletedCount, deletedEmails },
+      ...meta,
+    });
+
+    return NextResponse.json(
+      { deleted: true, deletedCount, deletedEmails },
+      { status: 200 }
+    );
   } catch (error) {
     return handleApiError(error, { route: "/api/users" });
   }

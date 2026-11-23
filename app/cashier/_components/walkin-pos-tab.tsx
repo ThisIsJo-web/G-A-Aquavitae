@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Ban,
   Banknote,
   Clock,
   CreditCard,
@@ -9,8 +10,9 @@ import {
   Plus,
   Receipt,
   ShoppingBag,
+  Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { trackAction } from "@/app/_components/activity-tracker";
 import {
   handleDecimalKeyDown,
@@ -75,7 +77,21 @@ export function WalkInPosTab({
   const [error, setError] = useState<string | null>(null);
   const [lastReceipt, setLastReceipt] = useState<PosSaleDTO | null>(null);
   const [voidingId, setVoidingId] = useState<string | null>(null);
-  const [selectedSales, setSelectedSales] = useState<Set<string>>(new Set());
+  const [selectedSales, setSelectedSales] = useState<string[]>([]);
+  const [pendingBulkAction, setPendingBulkAction] = useState<
+    "void" | "delete" | null
+  >(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkSuccess, setBulkSuccess] = useState<string | null>(null);
+
+  const activeSelectedSales = useMemo(
+    () => pos.sales.filter((s) => selectedSales.includes(s.id)),
+    [pos.sales, selectedSales]
+  );
+  const activeVoidableSales = useMemo(
+    () => activeSelectedSales.filter((s) => s.status === "completed"),
+    [activeSelectedSales]
+  );
 
   const activeCustomers = customers.filter((c) => c.is_active);
   const selectedCustomer = activeCustomers.find(
@@ -205,12 +221,108 @@ export function WalkInPosTab({
   }
 
   function toggleSelectSale(id: string) {
-    setSelectedSales((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setPendingBulkAction(null);
+    setSelectedSales((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }
+
+  function toggleAllSales() {
+    setPendingBulkAction(null);
+    const allIds = pos.sales.map((s) => s.id);
+    const allChecked =
+      allIds.length > 0 && allIds.every((id) => selectedSales.includes(id));
+    setSelectedSales(allChecked ? [] : allIds);
+  }
+
+  async function handleConfirmBulkAction() {
+    if (!pendingBulkAction || activeSelectedSales.length === 0) return;
+    setBulkBusy(true);
+    setError(null);
+    setBulkSuccess(null);
+
+    try {
+      if (pendingBulkAction === "delete") {
+        trackAction({
+          module: "pos",
+          action: `Deleted ${activeSelectedSales.length} Walk-in sale(s)`,
+          controlLabel: "Confirm Delete",
+        });
+        const res = await fetch(`/api/owner/sales${stationQuery}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: activeSelectedSales.map((s) => ({
+              id: `pos-${s.id}`,
+              channel: "walkin",
+            })),
+          }),
+        });
+        const payload = (await res.json()) as {
+          deletedCount?: number;
+          error?: string;
+        };
+        if (!res.ok) {
+          setError(payload.error ?? "Could not delete selected walk-in sales.");
+          return;
+        }
+        const count = payload.deletedCount ?? activeSelectedSales.length;
+        setSelectedSales([]);
+        setPendingBulkAction(null);
+        setBulkSuccess(
+          `Deleted ${count} selected walk-in ${count === 1 ? "sale" : "sales"}.`
+        );
+        await Promise.resolve(onDataChanged());
+        return;
+      }
+
+      // Bulk Void selected completed sales
+      if (activeVoidableSales.length === 0) {
+        setPendingBulkAction(null);
+        return;
+      }
+      trackAction({
+        module: "pos",
+        action: `Voided ${activeVoidableSales.length} Walk-in sale(s)`,
+        controlLabel: "Confirm Void",
+      });
+      let voidedCount = 0;
+      let firstErr: string | null = null;
+      for (const sale of activeVoidableSales) {
+        const res = await fetch(`/api/cashier/pos/${sale.id}${stationQuery}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "void",
+            reason: isElevatedActor
+              ? "Bulk voided by owner/admin"
+              : "Bulk voided by cashier",
+          }),
+        });
+        if (res.ok) {
+          voidedCount += 1;
+        } else if (!firstErr) {
+          const payload = (await res.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          firstErr = payload.error ?? "Could not void one or more sales.";
+        }
+      }
+
+      if (firstErr) setError(firstErr);
+      if (voidedCount > 0) {
+        setBulkSuccess(
+          `Voided ${voidedCount} walk-in ${voidedCount === 1 ? "sale" : "sales"}.`
+        );
+      }
+      setSelectedSales([]);
+      setPendingBulkAction(null);
+      await Promise.resolve(onDataChanged());
+    } catch {
+      setError("Connection error while updating selected sales.");
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   return (
@@ -597,19 +709,97 @@ export function WalkInPosTab({
 
       {/* Walk-in Sales Table */}
       <div className="av-card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-base font-bold text-[var(--av-ink)]">
               Walk-in Sales ({pos.sales.length})
             </h3>
             <p className="text-xs font-normal text-[var(--av-muted)]">
               Recorded for {businessDate}
+              {activeSelectedSales.length > 0 && (
+                <> · {activeSelectedSales.length} selected</>
+              )}
             </p>
           </div>
-          {selectedSales.size > 0 && (
-            <StatusChip label={`${selectedSales.size} selected`} tone="solid" />
-          )}
+
+          {activeSelectedSales.length > 0 &&
+            (!pendingBulkAction ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {activeVoidableSales.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setPendingBulkAction("void")}
+                    className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition"
+                  >
+                    <Ban className="h-3.5 w-3.5" />
+                    Void Selected ({activeVoidableSales.length})
+                  </button>
+                )}
+                {isElevatedActor && (
+                  <button
+                    type="button"
+                    onClick={() => setPendingBulkAction("delete")}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-red-500/40 bg-red-500/12 px-3.5 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-500/20 dark:text-red-300"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete Selected ({activeSelectedSales.length})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedSales([])}
+                  className="text-xs font-semibold text-[var(--av-muted)] hover:text-[var(--av-ink)]"
+                >
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-red-500/40 bg-red-500/10 py-1 pr-1 pl-3">
+                <span className="text-xs font-semibold text-red-700 dark:text-red-300">
+                  {pendingBulkAction === "delete"
+                    ? `Delete ${activeSelectedSales.length} ${activeSelectedSales.length === 1 ? "sale" : "sales"}?`
+                    : `Void ${activeVoidableSales.length} ${activeVoidableSales.length === 1 ? "sale" : "sales"}?`}
+                </span>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => setPendingBulkAction(null)}
+                  className="rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3 py-1 text-xs font-semibold text-[var(--av-ink)] transition hover:bg-[var(--av-surface-subtle)] disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void handleConfirmBulkAction()}
+                  className="inline-flex items-center gap-1 rounded-full bg-red-600 px-3.5 py-1 text-xs font-semibold text-white transition hover:bg-red-700 disabled:opacity-50"
+                >
+                  {pendingBulkAction === "delete" ? (
+                    <Trash2 className="h-3 w-3" />
+                  ) : (
+                    <Ban className="h-3 w-3" />
+                  )}
+                  {bulkBusy
+                    ? pendingBulkAction === "delete"
+                      ? "Deleting..."
+                      : "Voiding..."
+                    : pendingBulkAction === "delete"
+                      ? `Confirm Delete (${activeSelectedSales.length})`
+                      : `Confirm Void (${activeVoidableSales.length})`}
+                </button>
+              </div>
+            ))}
         </div>
+
+        {bulkSuccess && (
+          <div className="mt-4">
+            <NoticeBanner
+              tone="success"
+              message={bulkSuccess}
+              onDismiss={() => setBulkSuccess(null)}
+            />
+          </div>
+        )}
 
         <div className="mt-4 overflow-x-auto">
           {pos.sales.length === 0 ? (
@@ -622,7 +812,18 @@ export function WalkInPosTab({
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
                 <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
-                  <th className="w-8 pb-1 pl-3" />
+                  <th className="w-8 pb-1 pl-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all walk-in sales"
+                      checked={
+                        pos.sales.length > 0 &&
+                        pos.sales.every((s) => selectedSales.includes(s.id))
+                      }
+                      onChange={toggleAllSales}
+                      className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
+                    />
+                  </th>
                   <th className="px-3 pb-1">Receipt</th>
                   <th className="px-3 pb-1">Items</th>
                   <th className="px-3 pb-1">Payment</th>
@@ -642,7 +843,7 @@ export function WalkInPosTab({
                     <td className="rounded-l-2xl py-3 pl-3">
                       <input
                         type="checkbox"
-                        checked={selectedSales.has(sale.id)}
+                        checked={selectedSales.includes(sale.id)}
                         onChange={() => toggleSelectSale(sale.id)}
                         aria-label={`Select receipt ${sale.receipt_no}`}
                         className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"

@@ -87,7 +87,7 @@ export function buildDailyShiftTallyFromOverviews(params: {
   const deliveryFeeCashSales = deliveries.summary.paidCashDeliveryFees;
   const deliveryDigitalSales = deliveries.summary.paidDigitalTotal;
   const deliveryUnpaidTotal = deliveries.summary.unpaidTotal;
-  const vendoDailyIncome = vendo.summary.todayDailyTotal;
+  const vendoDailyIncome = vendo.summary.todayTotal;
 
   const totalCashCollected = roundMoney(
     walkinCashSales + deliveryCashSales + vendoDailyIncome

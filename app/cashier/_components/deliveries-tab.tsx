@@ -4,12 +4,15 @@ import {
   ArrowLeftRight,
   CalendarDays,
   CalendarRange,
+  CheckCircle2,
   Search,
+  Trash2,
   Truck,
   UserPlus,
   Users,
 } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
+import { trackAction } from "@/app/_components/activity-tracker";
 import {
   handleDecimalKeyDown,
   handleIntegerKeyDown,
@@ -83,11 +86,25 @@ export function DeliveriesTab({
   const [submitting, setSubmitting] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
-  const [selectedDeliveries, setSelectedDeliveries] = useState<Set<string>>(
-    new Set()
-  );
+  const [selectedDeliveries, setSelectedDeliveries] = useState<string[]>([]);
+  const [pendingBulkAction, setPendingBulkAction] = useState<
+    "paid_cash" | "paid_gcash" | "delete" | null
+  >(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  const activeSelectedDeliveries = useMemo(
+    () => data.deliveries.filter((d) => selectedDeliveries.includes(d.id)),
+    [data.deliveries, selectedDeliveries]
+  );
+  const activeUnpaidSelected = useMemo(
+    () =>
+      activeSelectedDeliveries.filter(
+        (d) => d.delivery_status !== "cancelled" && d.payment_status === "unpaid"
+      ),
+    [activeSelectedDeliveries]
+  );
 
   const qtyNum = Math.max(0, Math.floor(Number(quantity) || 0));
   const emptyNum =
@@ -131,12 +148,116 @@ export function DeliveriesTab({
   }
 
   function toggleSelectDelivery(id: string) {
-    setSelectedDeliveries((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setPendingBulkAction(null);
+    setSelectedDeliveries((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }
+
+  function toggleAllDeliveries() {
+    setPendingBulkAction(null);
+    const allIds = data.deliveries.map((d) => d.id);
+    const allChecked =
+      allIds.length > 0 &&
+      allIds.every((id) => selectedDeliveries.includes(id));
+    setSelectedDeliveries(allChecked ? [] : allIds);
+  }
+
+  async function handleConfirmBulkDeliveryAction() {
+    if (!pendingBulkAction || activeSelectedDeliveries.length === 0) return;
+    setBulkBusy(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      if (pendingBulkAction === "delete") {
+        trackAction({
+          module: "deliveries",
+          action: `Deleted ${activeSelectedDeliveries.length} delivery record(s)`,
+          controlLabel: "Confirm Delete",
+        });
+        const res = await fetch(`/api/owner/sales${stationQuery}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: activeSelectedDeliveries.map((d) => ({
+              id: `del-${d.id}`,
+              channel: "delivery",
+            })),
+          }),
+        });
+        const payload = (await res.json()) as {
+          deletedCount?: number;
+          error?: string;
+        };
+        if (!res.ok) {
+          setError(payload.error ?? "Could not delete selected deliveries.");
+          return;
+        }
+        const count = payload.deletedCount ?? activeSelectedDeliveries.length;
+        setSelectedDeliveries([]);
+        setPendingBulkAction(null);
+        setSuccess(
+          `Deleted ${count} selected ${count === 1 ? "delivery" : "deliveries"}.`
+        );
+        await Promise.resolve(onDataChanged());
+        return;
+      }
+
+      // Mark selected unpaid deliveries as Paid (Cash or GCash)
+      const targetMethod: DeliveryPaymentMethod =
+        pendingBulkAction === "paid_gcash" ? "gcash" : "cash";
+      if (activeUnpaidSelected.length === 0) {
+        setPendingBulkAction(null);
+        return;
+      }
+      trackAction({
+        module: "deliveries",
+        action: `Marked ${activeUnpaidSelected.length} delivery record(s) Paid (${targetMethod.toUpperCase()})`,
+        controlLabel:
+          targetMethod === "gcash"
+            ? "Confirm Paid (GCash)"
+            : "Confirm Paid (Cash)",
+      });
+
+      let updatedCount = 0;
+      let firstErr: string | null = null;
+      for (const del of activeUnpaidSelected) {
+        const res = await fetch(
+          `/api/cashier/deliveries/${del.id}${stationQuery}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              paymentStatus: "paid",
+              paymentMethod: targetMethod,
+            }),
+          }
+        );
+        if (res.ok) {
+          updatedCount += 1;
+        } else if (!firstErr) {
+          const payload = (await res.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          firstErr = payload.error ?? "Could not update one or more deliveries.";
+        }
+      }
+
+      if (firstErr) setError(firstErr);
+      if (updatedCount > 0) {
+        setSuccess(
+          `Marked ${updatedCount} ${updatedCount === 1 ? "delivery" : "deliveries"} as Paid (${targetMethod === "gcash" ? "GCash" : "Cash"}).`
+        );
+      }
+      setSelectedDeliveries([]);
+      setPendingBulkAction(null);
+      await Promise.resolve(onDataChanged());
+    } catch {
+      setError("Connection error while updating selected deliveries.");
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   async function handleAddCustomer(event: FormEvent<HTMLFormElement>) {
@@ -811,7 +932,7 @@ export function DeliveriesTab({
 
       {/* Deliveries Table */}
       <div className="av-card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-base font-bold text-[var(--av-ink)]">
               Deliveries ({data.deliveries.length})
@@ -820,14 +941,129 @@ export function DeliveriesTab({
               {businessDate} · Cash {formatPHP(data.summary.paidCashTotal)} ·
               GCash {formatPHP(data.summary.paidDigitalTotal)} · Unpaid{" "}
               {formatPHP(data.summary.unpaidTotal)}
+              {activeSelectedDeliveries.length > 0 && (
+                <> · {activeSelectedDeliveries.length} selected</>
+              )}
             </p>
           </div>
-          {selectedDeliveries.size > 0 && (
-            <StatusChip
-              label={`${selectedDeliveries.size} selected`}
-              tone="solid"
-            />
-          )}
+
+          {activeSelectedDeliveries.length > 0 &&
+            (!pendingBulkAction ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {activeUnpaidSelected.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setPendingBulkAction("paid_cash")}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/12 px-3.5 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-500/20 dark:text-emerald-300"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Mark Paid Cash ({activeUnpaidSelected.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPendingBulkAction("paid_gcash")}
+                      className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Mark Paid GCash ({activeUnpaidSelected.length})
+                    </button>
+                  </>
+                )}
+
+                {!isElevatedActor &&
+                  activeSelectedDeliveries.length === 1 &&
+                  activeSelectedDeliveries[0].delivery_status !== "cancelled" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const d = activeSelectedDeliveries[0];
+                        onRequestCorrection({
+                          entityType: "delivery",
+                          entityId: d.id,
+                          entityLabel: `${d.customer_name} · ${d.destination}`,
+                          currentSummary: `${d.quantity} gal · ${formatPHP(d.total_amount)} (${d.payment_status})`,
+                          defaultPaymentMethod: d.payment_method,
+                          defaultAmount: d.total_amount,
+                        });
+                      }}
+                      className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition"
+                    >
+                      Request Correction / Cancel
+                    </button>
+                  )}
+
+                {isElevatedActor && (
+                  <button
+                    type="button"
+                    onClick={() => setPendingBulkAction("delete")}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-red-500/40 bg-red-500/12 px-3.5 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-500/20 dark:text-red-300"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete Selected ({activeSelectedDeliveries.length})
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedDeliveries([])}
+                  className="text-xs font-semibold text-[var(--av-muted)] hover:text-[var(--av-ink)]"
+                >
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <div
+                className={`inline-flex flex-wrap items-center gap-2 rounded-full border py-1 pr-1 pl-3 ${
+                  pendingBulkAction === "delete"
+                    ? "border-red-500/40 bg-red-500/10"
+                    : "border-emerald-500/40 bg-emerald-500/10"
+                }`}
+              >
+                <span
+                  className={`text-xs font-semibold ${
+                    pendingBulkAction === "delete"
+                      ? "text-red-700 dark:text-red-300"
+                      : "text-emerald-700 dark:text-emerald-300"
+                  }`}
+                >
+                  {pendingBulkAction === "delete"
+                    ? `Delete ${activeSelectedDeliveries.length} ${activeSelectedDeliveries.length === 1 ? "delivery" : "deliveries"}?`
+                    : `Mark ${activeUnpaidSelected.length} paid via ${pendingBulkAction === "paid_gcash" ? "GCash" : "Cash"}?`}
+                </span>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => setPendingBulkAction(null)}
+                  className="rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3 py-1 text-xs font-semibold text-[var(--av-ink)] transition hover:bg-[var(--av-surface-subtle)] disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void handleConfirmBulkDeliveryAction()}
+                  className={`inline-flex items-center gap-1 rounded-full px-3.5 py-1 text-xs font-semibold text-white transition disabled:opacity-50 ${
+                    pendingBulkAction === "delete"
+                      ? "bg-red-600 hover:bg-red-700"
+                      : "bg-emerald-600 hover:bg-emerald-700"
+                  }`}
+                >
+                  {pendingBulkAction === "delete" ? (
+                    <Trash2 className="h-3 w-3" />
+                  ) : (
+                    <CheckCircle2 className="h-3 w-3" />
+                  )}
+                  {bulkBusy
+                    ? pendingBulkAction === "delete"
+                      ? "Deleting..."
+                      : "Updating..."
+                    : pendingBulkAction === "delete"
+                      ? `Confirm Delete (${activeSelectedDeliveries.length})`
+                      : `Confirm Paid (${activeUnpaidSelected.length})`}
+                </button>
+              </div>
+            ))}
         </div>
 
         <div className="mt-4 overflow-x-auto">
@@ -841,7 +1077,20 @@ export function DeliveriesTab({
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
                 <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
-                  <th className="w-8 pb-1 pl-3" />
+                  <th className="w-8 pb-1 pl-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all deliveries"
+                      checked={
+                        data.deliveries.length > 0 &&
+                        data.deliveries.every((d) =>
+                          selectedDeliveries.includes(d.id)
+                        )
+                      }
+                      onChange={toggleAllDeliveries}
+                      className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
+                    />
+                  </th>
                   <th className="px-3 pb-1">Customer &amp; Area</th>
                   <th className="px-3 pb-1">Gallons Out / In</th>
                   <th className="px-3 pb-1">Total</th>
@@ -863,7 +1112,7 @@ export function DeliveriesTab({
                       <td className="rounded-l-2xl py-3 pl-3">
                         <input
                           type="checkbox"
-                          checked={selectedDeliveries.has(d.id)}
+                          checked={selectedDeliveries.includes(d.id)}
                           onChange={() => toggleSelectDelivery(d.id)}
                           aria-label={`Select delivery for ${d.customer_name}`}
                           className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"

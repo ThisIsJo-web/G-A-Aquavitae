@@ -28,14 +28,14 @@ export const EXPENSE_CATEGORIES: {
   value: ExpenseCategory;
   label: string;
 }[] = [
-  { value: "utilities", label: "Utilities (Water / Electric)" },
-  { value: "supplies", label: "Supplies (Seals / Caps / Soap)" },
-  { value: "maintenance", label: "Machine Maintenance / Filters" },
-  { value: "salary", label: "Staff Wages / Allowance" },
-  { value: "delivery_fuel", label: "Fuel & Transport" },
-  { value: "rent", label: "Station Rent" },
-  { value: "other", label: "Other Expense" },
-];
+    { value: "utilities", label: "Utilities (Water / Electric)" },
+    { value: "supplies", label: "Supplies (Seals / Caps / Soap)" },
+    { value: "maintenance", label: "Machine Maintenance / Filters" },
+    { value: "salary", label: "Staff Wages / Allowance" },
+    { value: "delivery_fuel", label: "Fuel & Transport" },
+    { value: "rent", label: "Station Rent" },
+    { value: "other", label: "Other Expense" },
+  ];
 
 const VALID_EXPENSE_CATEGORIES = new Set<ExpenseCategory>(
   EXPENSE_CATEGORIES.map((c) => c.value)
@@ -623,8 +623,7 @@ export async function getOwnerDashboardSnapshot(
       createdAt: ven.created_at,
       channel: "vendo",
       reference: ven.machine_name,
-      customerLabel:
-        ven.period_type === "weekly" ? "Weekly Collection" : "Daily Collection",
+      customerLabel: "Monthly Collection",
       gallons: 0,
       paymentMethod: "Coins",
       status: "paid",

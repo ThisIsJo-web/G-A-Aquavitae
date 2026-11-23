@@ -42,7 +42,6 @@ export interface AccountSummary {
     superadmin: number;
     owner: number;
     cashier: number;
-    staff: number;
   };
 }
 
@@ -184,7 +183,7 @@ async function getAccountSummary(): Promise<AccountSummary> {
     .select("role, is_active");
 
   const rows = data ?? [];
-  const byRole = { superadmin: 0, owner: 0, cashier: 0, staff: 0 };
+  const byRole = { superadmin: 0, owner: 0, cashier: 0 };
   let active = 0;
   let inactive = 0;
 

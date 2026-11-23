@@ -87,6 +87,8 @@ async function OwnerPageContent({
       initialStaff={initialStaff}
       initialAuditCount={initialAuditCount}
       initialPulseVersion={initialPulse.version}
+      mustChangeCredentials={ctx.mustChangeCredentials}
+      credentialsClaimed={ctx.credentialsClaimed}
     />
   );
 }

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import type { VendoPeriodType } from "@/backend/db/types";
 import {
   extractRequestMeta,
   handleApiError,
@@ -32,9 +31,7 @@ export async function GET(request: Request) {
 
 interface CreateVendoBody {
   machineName?: unknown;
-  periodType?: unknown;
-  periodStart?: unknown;
-  periodEnd?: unknown;
+  collectionMonth?: unknown;
   amount?: unknown;
   meterStart?: unknown;
   meterEnd?: unknown;
@@ -52,22 +49,18 @@ export async function POST(request: Request) {
 
     if (!body || !Number.isFinite(Number(body.amount))) {
       return NextResponse.json(
-        { error: "Valid collection amount is required" },
+        { error: "Valid collection amount is required." },
         { status: 400 }
       );
     }
 
-    const periodType: VendoPeriodType =
-      body.periodType === "weekly" ? "weekly" : "daily";
-
     const collection = await createVendoCollection(profile.id, tenantOwnerId, {
       machineName:
         typeof body.machineName === "string" ? body.machineName : undefined,
-      periodType,
-      periodStart:
-        typeof body.periodStart === "string" ? body.periodStart : undefined,
-      periodEnd:
-        typeof body.periodEnd === "string" ? body.periodEnd : undefined,
+      collectionMonth:
+        typeof body.collectionMonth === "string"
+          ? body.collectionMonth
+          : undefined,
       amount: Number(body.amount),
       meterStart:
         body.meterStart !== undefined && body.meterStart !== ""
@@ -92,11 +85,11 @@ export async function POST(request: Request) {
       },
       stationOwnerId: tenantOwnerId,
       module: "vendo",
-      action: `Recorded Vendo Income (${periodType} · ₱${collection.amount.toFixed(2)})`,
-      controlLabel: "Save Vendo Income",
+      action: `Recorded Monthly Vendo Income (₱${collection.amount.toFixed(2)})`,
+      controlLabel: "Save Monthly Vendo Income",
       targetType: "vendo",
       targetId: collection.id,
-      targetLabel: collection.machine_name,
+      targetLabel: `${collection.machine_name} (${collection.period_start.slice(0, 7)})`,
       route: "/api/cashier/vendo",
       ...meta,
     });

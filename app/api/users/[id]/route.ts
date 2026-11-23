@@ -6,6 +6,7 @@ import {
 } from "@/backend/lib/http";
 import { scheduleActivityLog } from "@/backend/services/activity-logs";
 import {
+  deleteManagedUsers,
   isValidRole,
   requireActiveProfile,
   updateManagedUser,
@@ -35,7 +36,7 @@ export async function PATCH(
 
   if (body.role !== undefined && !isValidRole(body.role)) {
     return NextResponse.json(
-      { error: "Role must be superadmin, owner, cashier, or staff" },
+      { error: "Role must be superadmin, owner, or cashier" },
       { status: 400 }
     );
   }
@@ -118,6 +119,43 @@ export async function PATCH(
           "Cache-Control": "private, no-store",
         },
       }
+    );
+  } catch (error) {
+    return handleApiError(error, { route: "/api/users/[id]" });
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+
+  try {
+    const actor = await requireActiveProfile();
+    const { deletedCount, deletedEmails } = await deleteManagedUsers([id]);
+
+    const meta = extractRequestMeta(request);
+    scheduleActivityLog({
+      actor: {
+        id: actor.id,
+        name: actor.full_name || actor.email,
+        email: actor.email,
+        role: actor.role,
+      },
+      module: "accounts",
+      action: `Deleted user account (${deletedEmails[0] ?? id})`,
+      controlLabel: "Delete Account",
+      targetType: "account",
+      targetId: id,
+      targetLabel: deletedEmails[0] ?? id,
+      route: "/api/users/[id]",
+      ...meta,
+    });
+
+    return NextResponse.json(
+      { deleted: true, deletedCount, deletedEmails },
+      { status: 200 }
     );
   } catch (error) {
     return handleApiError(error, { route: "/api/users/[id]" });

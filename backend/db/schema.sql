@@ -542,13 +542,13 @@ create trigger on_deliveries_updated
   for each row
   execute function public.handle_updated_at();
 
--- 10e. Vendo Machine Income (Daily or Weekly collections)
+-- 10e. Vendo Machine Income (Monthly collections only)
 create table if not exists public.vendo_collections (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users (id) on delete cascade,
   cashier_id uuid references auth.users (id) on delete set null,
   machine_name text not null default 'Main Vendo #1',
-  period_type text not null check (period_type in ('daily', 'weekly')),
+  period_type text not null default 'monthly' check (period_type in ('monthly')),
   period_start date not null,
   period_end date not null,
   amount numeric(10, 2) not null check (amount >= 0),
@@ -868,10 +868,10 @@ create policy "Tenant cashier/owner manages correction_requests"
 -- ============================================================
 create table if not exists public.financial_audit_logs (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null references auth.users (id) on delete cascade,
+  owner_id uuid not null,
   seq_no bigint not null check (seq_no > 0),
   business_date date not null,
-  actor_id uuid references auth.users (id) on delete set null,
+  actor_id uuid,
   actor_name text not null,
   actor_role text not null check (actor_role in ('cashier', 'owner', 'superadmin', 'system')),
   module text not null check (
@@ -971,11 +971,11 @@ alter table public.pos_products
 create table if not exists public.system_activity_logs (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz not null default now(),
-  actor_id uuid references auth.users (id) on delete set null,
+  actor_id uuid,
   actor_name text not null,
   actor_email text not null,
   actor_role text not null check (actor_role in ('superadmin', 'owner', 'cashier', 'staff', 'anonymous')),
-  station_owner_id uuid references auth.users (id) on delete set null,
+  station_owner_id uuid,
   module text not null,
   action text not null,
   control_label text,
@@ -1081,3 +1081,47 @@ alter table public.pos_sale_items drop column if exists gallon_type;
 alter table public.deliveries drop column if exists gallon_type;
 alter table public.gallon_inventory_logs drop column if exists gallon_type;
 alter table public.borrowed_gallons drop column if exists gallon_type;
+
+-- ============================================================
+-- 12i. Switch Vendo Machine Income to Strictly Monthly Only
+-- ============================================================
+alter table public.vendo_collections
+  drop constraint if exists vendo_collections_period_type_check;
+
+update public.vendo_collections
+set period_type = 'monthly'
+where period_type is distinct from 'monthly';
+
+alter table public.vendo_collections
+  alter column period_type set default 'monthly';
+
+alter table public.vendo_collections
+  add constraint vendo_collections_period_type_check
+  check (period_type in ('monthly'));
+
+-- ============================================================
+-- 12j. Detach auth.users FKs from Append-Only Audit Tables
+--      so test/former accounts can be deleted cleanly without
+--      triggering immutability errors on historical audit logs.
+-- ============================================================
+alter table public.financial_audit_logs
+  drop constraint if exists financial_audit_logs_owner_id_fkey,
+  drop constraint if exists financial_audit_logs_actor_id_fkey;
+
+alter table public.system_activity_logs
+  drop constraint if exists system_activity_logs_actor_id_fkey,
+  drop constraint if exists system_activity_logs_station_owner_id_fkey;
+
+-- ============================================================
+-- 12k. Remove Unused 'staff' Role (Strictly Superadmin > Owner > Cashier)
+-- ============================================================
+update public.profiles
+set role = 'cashier'
+where role = 'staff';
+
+alter table public.profiles
+  drop constraint if exists profiles_role_check;
+
+alter table public.profiles
+  add constraint profiles_role_check
+  check (role in ('superadmin', 'owner', 'cashier'));

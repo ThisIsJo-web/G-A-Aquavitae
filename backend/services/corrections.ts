@@ -278,9 +278,19 @@ export async function createCorrectionRequest(
           400
         );
       }
+      const nextStatus = nextMethod === "credit" ? "unpaid" : "paid";
+      if (
+        nextMethod === del.payment_method &&
+        nextStatus === del.payment_status
+      ) {
+        throw new AuthServiceError(
+          "The selected payment method is already the current payment method.",
+          400
+        );
+      }
       sanitizedProposed = {
         payment_method: nextMethod,
-        payment_status: nextMethod === "credit" ? "unpaid" : "paid",
+        payment_status: nextStatus,
       };
     } else if (input.correctionType === "update_amount") {
       const nextAmount = roundMoney(toNumber(input.proposedChanges.amount, -1));
@@ -403,33 +413,6 @@ export async function createCorrectionRequest(
     );
   }
 
-  await recordFinancialAuditEvent({
-    ownerId: input.ownerId,
-    actor: {
-      id: input.requestedBy,
-      name: input.requesterName,
-      role: input.actorRole ?? "cashier",
-    },
-    module: "supervision",
-    eventType: input.autoApprove
-      ? "correction.direct_applied"
-      : "correction.requested",
-    entityType: input.entityType,
-    entityId: input.entityId,
-    referenceLabel: entityLabel,
-    summary: input.autoApprove
-      ? `${input.actorRole === "superadmin" ? "Superadmin" : "Owner"} applied ${input.correctionType.replace(/_/g, " ")} on ${entityLabel}: "${reason}"`
-      : `Cashier requested ${input.correctionType.replace(/_/g, " ")} on ${entityLabel}: "${reason}"`,
-    beforeSnapshot,
-    afterSnapshot: sanitizedProposed,
-    metadata: {
-      correction_request_id: inserted.id,
-      correction_type: input.correctionType,
-      reason,
-      direct_apply: Boolean(input.autoApprove),
-    },
-  });
-
   if (input.autoApprove) {
     return reviewCorrectionRequest({
       ownerId: input.ownerId,
@@ -439,6 +422,29 @@ export async function createCorrectionRequest(
       reviewerNote: `Applied directly by ${input.actorRole === "superadmin" ? "Superadmin" : "Owner"}`,
     });
   }
+
+  await recordFinancialAuditEvent({
+    ownerId: input.ownerId,
+    actor: {
+      id: input.requestedBy,
+      name: input.requesterName,
+      role: input.actorRole ?? "cashier",
+    },
+    module: "supervision",
+    eventType: "correction.requested",
+    entityType: input.entityType,
+    entityId: input.entityId,
+    referenceLabel: entityLabel,
+    summary: `Cashier requested ${input.correctionType.replace(/_/g, " ")} on ${entityLabel}: "${reason}"`,
+    beforeSnapshot,
+    afterSnapshot: sanitizedProposed,
+    metadata: {
+      correction_request_id: inserted.id,
+      correction_type: input.correctionType,
+      reason,
+      direct_apply: false,
+    },
+  });
 
   return inserted;
 }

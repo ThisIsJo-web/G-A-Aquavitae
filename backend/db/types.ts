@@ -12,8 +12,8 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
-export type UserRole = "superadmin" | "owner" | "cashier" | "staff";
-export type StaffRole = "cashier" | "staff";
+export type UserRole = "superadmin" | "owner" | "cashier";
+export type StaffRole = "cashier";
 export type ErrorLogLevel = "critical" | "error" | "warning";
 export type ErrorLogLayer = "backend" | "database_auth" | "frontend";
 export type ErrorLogSource = "api" | "database" | "auth" | "client" | "system";
@@ -29,7 +29,7 @@ export type DeliveryStatus =
   | "out_for_delivery"
   | "delivered"
   | "cancelled";
-export type VendoPeriodType = "daily" | "weekly";
+export type VendoPeriodType = "monthly";
 export type GallonMovementType =
   | "restock"
   | "walkin_out"
@@ -73,7 +73,6 @@ export type ActivityActorRole =
   | "superadmin"
   | "owner"
   | "cashier"
-  | "staff"
   | "anonymous";
 export type ActivityStatus = "success" | "failed" | "denied";
 

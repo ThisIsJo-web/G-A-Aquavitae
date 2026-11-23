@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createSupabaseAdminClient } from "@/backend/db/supabase";
-import type { Database, VendoPeriodType } from "@/backend/db/types";
+import type { Database } from "@/backend/db/types";
 import { AuthServiceError } from "@/backend/services/auth";
 import {
   formatCentavosPHP,
@@ -10,6 +10,7 @@ import {
 } from "@/backend/services/audit-ledger";
 import {
   assertOperationalDateAllowed,
+  getTodayBusinessDate,
   isMissingCashierSchemaError,
   roundMoney,
   sanitizeBusinessDate,
@@ -24,19 +25,40 @@ export interface VendoOverviewResult {
   schemaMissing: boolean;
   collections: VendoCollectionRow[];
   summary: {
-    todayDailyTotal: number;
-    todayAllTotal: number;
-    weekTotal: number;
-    monthTotal: number;
-    dailyCount: number;
-    weeklyCount: number;
+    thisMonthTotal: number;
+    todayTotal: number;
+    yearTotal: number;
+    totalEntries: number;
   };
 }
 
-function addDays(isoDate: string, days: number): string {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d + days));
-  return dt.toISOString().slice(0, 10);
+function getMonthBounds(yearMonth: string): { start: string; end: string } {
+  const [yStr, mStr] = yearMonth.split("-");
+  const year = Number(yStr);
+  const month = Number(mStr);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const mm = String(month).padStart(2, "0");
+  const dd = String(lastDay).padStart(2, "0");
+  return {
+    start: `${year}-${mm}-01`,
+    end: `${year}-${mm}-${dd}`,
+  };
+}
+
+function addMonths(yearMonth: string, deltaMonths: number): string {
+  const [y, m] = yearMonth.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1 + deltaMonths, 1));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthDisplay(yearMonth: string): string {
+  const [y, m] = yearMonth.split("-").map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return yearMonth;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(y, m - 1, 1)));
 }
 
 export async function getVendoOverview(
@@ -44,15 +66,15 @@ export async function getVendoOverview(
   businessDateInput?: string
 ): Promise<VendoOverviewResult> {
   const businessDate = sanitizeBusinessDate(businessDateInput);
-  const weekStart = addDays(businessDate, -6);
-  const monthStart = `${businessDate.slice(0, 7)}-01`;
+  const currentMonth = businessDate.slice(0, 7);
+  const currentYear = businessDate.slice(0, 4);
 
   const admin = createSupabaseAdminClient();
   const { data, error } = await admin
     .from("vendo_collections")
     .select("*")
     .eq("owner_id", ownerId)
-    .order("business_date", { ascending: false })
+    .order("period_start", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(60);
 
@@ -63,12 +85,10 @@ export async function getVendoOverview(
         schemaMissing: true,
         collections: [],
         summary: {
-          todayDailyTotal: 0,
-          todayAllTotal: 0,
-          weekTotal: 0,
-          monthTotal: 0,
-          dailyCount: 0,
-          weeklyCount: 0,
+          thisMonthTotal: 0,
+          todayTotal: 0,
+          yearTotal: 0,
+          totalEntries: 0,
         },
       };
     }
@@ -77,33 +97,28 @@ export async function getVendoOverview(
 
   const collections: VendoCollectionRow[] = (data ?? []).map((row) => ({
     ...row,
+    period_type: "monthly",
     amount: toNumber(row.amount),
     meter_start: row.meter_start !== null ? toNumber(row.meter_start) : null,
     meter_end: row.meter_end !== null ? toNumber(row.meter_end) : null,
   }));
 
-  let todayDailyTotal = 0;
-  let todayAllTotal = 0;
-  let weekTotal = 0;
-  let monthTotal = 0;
-  let dailyCount = 0;
-  let weeklyCount = 0;
+  let thisMonthTotal = 0;
+  let todayTotal = 0;
+  let yearTotal = 0;
 
   for (const c of collections) {
-    if (c.period_type === "daily") dailyCount += 1;
-    else weeklyCount += 1;
+    const entryMonth = (c.period_start || c.business_date).slice(0, 7);
+    const entryYear = entryMonth.slice(0, 4);
 
+    if (entryMonth === currentMonth) {
+      thisMonthTotal += c.amount;
+    }
     if (c.business_date === businessDate) {
-      todayAllTotal += c.amount;
-      if (c.period_type === "daily") {
-        todayDailyTotal += c.amount;
-      }
+      todayTotal += c.amount;
     }
-    if (c.business_date >= weekStart && c.business_date <= businessDate) {
-      weekTotal += c.amount;
-    }
-    if (c.business_date >= monthStart && c.business_date <= businessDate) {
-      monthTotal += c.amount;
+    if (entryYear === currentYear) {
+      yearTotal += c.amount;
     }
   }
 
@@ -112,21 +127,17 @@ export async function getVendoOverview(
     schemaMissing: false,
     collections,
     summary: {
-      todayDailyTotal: roundMoney(todayDailyTotal),
-      todayAllTotal: roundMoney(todayAllTotal),
-      weekTotal: roundMoney(weekTotal),
-      monthTotal: roundMoney(monthTotal),
-      dailyCount,
-      weeklyCount,
+      thisMonthTotal: roundMoney(thisMonthTotal),
+      todayTotal: roundMoney(todayTotal),
+      yearTotal: roundMoney(yearTotal),
+      totalEntries: collections.length,
     },
   };
 }
 
 export interface CreateVendoCollectionInput {
   machineName?: string;
-  periodType: VendoPeriodType;
-  periodStart?: string;
-  periodEnd?: string;
+  collectionMonth?: string;
   amount: number;
   meterStart?: number | null;
   meterEnd?: number | null;
@@ -147,26 +158,33 @@ export async function createVendoCollection(
   const amount = roundMoney(Number(input.amount));
 
   if (!Number.isFinite(amount) || amount < 0) {
-    throw new AuthServiceError("Collection amount must be 0 or greater", 400);
+    throw new AuthServiceError("Collection amount must be 0 or greater.", 400);
   }
 
-  const periodEnd = assertOperationalDateAllowed(
-    input.periodEnd ?? businessDate,
-    7,
-    "Period end date"
-  );
-  const periodStart = assertOperationalDateAllowed(
-    input.periodStart ??
-      (input.periodType === "weekly" ? addDays(periodEnd, -6) : periodEnd),
-    14,
-    "Period start date"
-  );
-  if (periodStart > periodEnd) {
+  const todayMonth = getTodayBusinessDate().slice(0, 7);
+  const minAllowedMonth = addMonths(todayMonth, -11);
+  const rawMonth = (input.collectionMonth ?? businessDate.slice(0, 7)).trim();
+
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(rawMonth)) {
     throw new AuthServiceError(
-      "Start date cannot be after end date.",
+      "Please select a valid collection month.",
       400
     );
   }
+  if (rawMonth > todayMonth) {
+    throw new AuthServiceError(
+      "Future months are not allowed for Vendo income.",
+      400
+    );
+  }
+  if (rawMonth < minAllowedMonth) {
+    throw new AuthServiceError(
+      `Collection month cannot be earlier than ${formatMonthDisplay(minAllowedMonth)}.`,
+      400
+    );
+  }
+
+  const { start: periodStart, end: periodEnd } = getMonthBounds(rawMonth);
 
   const admin = createSupabaseAdminClient();
   const { data, error } = await admin
@@ -175,7 +193,7 @@ export async function createVendoCollection(
       owner_id: ownerId,
       cashier_id: cashierId,
       machine_name: input.machineName?.trim() || "Main Vendo #1",
-      period_type: input.periodType,
+      period_type: "monthly",
       period_start: periodStart,
       period_end: periodEnd,
       amount,
@@ -198,12 +216,19 @@ export async function createVendoCollection(
     .single();
 
   if (error || !data) {
+    if (error?.message?.includes("vendo_collections_period_type_check")) {
+      throw new AuthServiceError(
+        "Database update required for Monthly Vendo income. Run Section 12i of schema.sql in Supabase SQL Editor.",
+        503
+      );
+    }
     throw new AuthServiceError(
-      error?.message ?? "Failed to save vendo collection",
+      error?.message ?? "Failed to save monthly vendo collection.",
       500
     );
   }
 
+  const monthLabel = formatMonthDisplay(rawMonth);
   const amountCents = toCentavos(amount);
   await recordFinancialAuditEvent({
     ownerId,
@@ -213,23 +238,25 @@ export async function createVendoCollection(
     eventType: "vendo.collected",
     entityType: "vendo",
     entityId: data.id,
-    referenceLabel: `${data.machine_name} (${data.period_type})`,
+    referenceLabel: `${data.machine_name} (${monthLabel})`,
     cashDeltaCentavos: amountCents,
     grossSalesDeltaCentavos: amountCents,
-    summary: `Vendo ${data.period_type} coin collection (${data.machine_name}): ${formatCentavosPHP(amountCents)}`,
+    summary: `Monthly Vendo income (${data.machine_name} · ${monthLabel}): ${formatCentavosPHP(amountCents)}`,
     afterSnapshot: {
       machine_name: data.machine_name,
-      period_type: data.period_type,
+      period_type: "monthly",
       period_start: data.period_start,
       period_end: data.period_end,
       amount: toNumber(data.amount),
-      meter_start: data.meter_start !== null ? toNumber(data.meter_start) : null,
+      meter_start:
+        data.meter_start !== null ? toNumber(data.meter_start) : null,
       meter_end: data.meter_end !== null ? toNumber(data.meter_end) : null,
     },
   });
 
   return {
     ...data,
+    period_type: "monthly",
     amount: toNumber(data.amount),
     meter_start: data.meter_start !== null ? toNumber(data.meter_start) : null,
     meter_end: data.meter_end !== null ? toNumber(data.meter_end) : null,

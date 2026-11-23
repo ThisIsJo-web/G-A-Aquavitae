@@ -161,7 +161,7 @@ export function ShiftClosingTab({
                 val: `+${formatPHP(liveTally.deliveryFeeCashSales)}`,
               },
               {
-                title: "Vendo Machine Income (Daily)",
+                title: "Vendo Machine Income (Monthly)",
                 sub: `Coins logged on ${businessDate}`,
                 val: `+${formatPHP(liveTally.vendoDailyIncome)}`,
               },

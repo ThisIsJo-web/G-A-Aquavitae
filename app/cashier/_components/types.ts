@@ -176,12 +176,10 @@ export interface VendoOverviewDTO {
   schemaMissing: boolean;
   collections: VendoCollectionDTO[];
   summary: {
-    todayDailyTotal: number;
-    todayAllTotal: number;
-    weekTotal: number;
-    monthTotal: number;
-    dailyCount: number;
-    weeklyCount: number;
+    thisMonthTotal: number;
+    todayTotal: number;
+    yearTotal: number;
+    totalEntries: number;
   };
 }
 

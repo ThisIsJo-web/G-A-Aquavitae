@@ -5,6 +5,7 @@ import type { UserRole } from "@/backend/db/types";
 import { AuthServiceError } from "@/backend/services/auth";
 import {
   getRequestProfile,
+  getSecuredOwnerIds,
   requireActiveProfile,
   type UserProfile,
 } from "@/backend/services/users";
@@ -16,35 +17,62 @@ export interface StationOption {
 }
 
 /**
- * Lists active Owner stations (used by Superadmin when operating Owner/Cashier modules).
+ * Lists active Owner stations accessible to Superadmin.
+ * Owners who have claimed/secured their personal credentials (`credentials_claimed = true`)
+ * are automatically excluded so Superadmin cannot access their private accounts for integrity.
  */
 export async function listActiveOwnerStations(): Promise<StationOption[]> {
   const admin = createSupabaseAdminClient();
-  const { data, error } = await admin
-    .from("profiles")
-    .select("id, email, full_name")
-    .eq("role", "owner")
-    .eq("is_active", true)
-    .order("created_at", { ascending: true });
+  const [res, securedOwnerIds] = await Promise.all([
+    admin
+      .from("profiles")
+      .select("id, email, full_name")
+      .eq("role", "owner")
+      .eq("is_active", true)
+      .order("created_at", { ascending: true }),
+    getSecuredOwnerIds(),
+  ]);
 
-  if (error || !data) return [];
-  return data.map((row) => ({
-    id: row.id,
-    email: row.email,
-    fullName: row.full_name,
-  }));
+  if (res.error || !res.data) return [];
+  return res.data
+    .filter((row) => !securedOwnerIds.has(row.id))
+    .map((row) => ({
+      id: row.id,
+      email: row.email,
+      fullName: row.full_name,
+    }));
 }
 
 async function resolveSuperadminStation(
+  superadminProfile: UserProfile,
   requestedOwnerId?: string | null
 ): Promise<{ tenantOwnerId: string; stations: StationOption[] }> {
-  const stations = await listActiveOwnerStations();
-  if (stations.length === 0) {
+  const [accessibleStations, securedOwnerIds] = await Promise.all([
+    listActiveOwnerStations(),
+    getSecuredOwnerIds(),
+  ]);
+
+  if (requestedOwnerId && securedOwnerIds.has(requestedOwnerId)) {
     throw new AuthServiceError(
-      "No active Owner station exists yet. Create an Owner account in Accounts & Roles first.",
-      400
+      "This owner account is secured with personal credentials and can no longer be accessed by Superadmin for integrity.",
+      403
     );
   }
+
+  // Always include Superadmin's own workspace fallback so Superadmin can still operate
+  // Owner & Cashier features hierarchically even when all Owner accounts are secured.
+  const stations: StationOption[] =
+    accessibleStations.length > 0
+      ? accessibleStations
+      : [
+          {
+            id: superadminProfile.id,
+            email: superadminProfile.email,
+            fullName: superadminProfile.full_name
+              ? `${superadminProfile.full_name} (Superadmin Station)`
+              : "Superadmin Station",
+          },
+        ];
 
   if (requestedOwnerId) {
     const matched = stations.find((s) => s.id === requestedOwnerId);
@@ -115,7 +143,7 @@ export type OwnerAccessContext = TenantAccessContext;
  * Hierarchical API Route guard for /api/cashier/*:
  * - cashier: access to assigned owner station (tenantOwnerId = profile.owner_id)
  * - owner: direct access to their own station (tenantOwnerId = profile.id)
- * - superadmin: direct access to selected or default active Owner station
+ * - superadmin: access to unclaimed station or own Superadmin station (never secured Owners)
  */
 export async function requireCashierAccess(
   requestedStationId?: string | null
@@ -143,7 +171,10 @@ export async function requireCashierAccess(
   }
 
   if (profile.role === "superadmin") {
-    const { tenantOwnerId } = await resolveSuperadminStation(requestedStationId);
+    const { tenantOwnerId } = await resolveSuperadminStation(
+      profile,
+      requestedStationId
+    );
     return {
       profile,
       tenantOwnerId,
@@ -159,7 +190,7 @@ export async function requireCashierAccess(
 /**
  * Hierarchical API Route guard for /api/owner/*:
  * - owner: access to their own station (tenantOwnerId = profile.id)
- * - superadmin: direct access to selected or default active Owner station
+ * - superadmin: access to unclaimed station or own Superadmin station (never secured Owners)
  */
 export async function requireOwnerAccess(
   requestedStationId?: string | null
@@ -174,7 +205,10 @@ export async function requireOwnerAccess(
   }
 
   if (profile.role === "superadmin") {
-    const { tenantOwnerId } = await resolveSuperadminStation(requestedStationId);
+    const { tenantOwnerId } = await resolveSuperadminStation(
+      profile,
+      requestedStationId
+    );
     return {
       profile,
       tenantOwnerId,
@@ -268,33 +302,36 @@ export async function getCashierPageContext(
   }
 
   if (profile.role === "superadmin") {
-    const stations = await listActiveOwnerStations();
-    if (stations.length === 0) {
+    try {
+      const { tenantOwnerId, stations } = await resolveSuperadminStation(
+        profile,
+        requestedStationId
+      );
+      return {
+        status: "ok",
+        profile,
+        tenantOwnerId,
+        stations,
+      };
+    } catch (error) {
       return {
         status: "forbidden",
         role: profile.role,
         email: profile.email,
         reason:
-          "No active Owner station exists yet. Create an Owner account under Accounts & Roles first.",
+          error instanceof Error
+            ? error.message
+            : "This station cannot be accessed.",
       };
     }
-    const matched = requestedStationId
-      ? stations.find((s) => s.id === requestedStationId)
-      : null;
-
-    return {
-      status: "ok",
-      profile,
-      tenantOwnerId: matched ? matched.id : stations[0].id,
-      stations,
-    };
   }
 
   return {
     status: "forbidden",
     role: profile.role,
     email: profile.email,
-    reason: "Cashier operations are restricted to Cashier, Owner, and Superadmin accounts.",
+    reason:
+      "Cashier operations are restricted to Cashier, Owner, and Superadmin accounts.",
   };
 }
 
@@ -311,6 +348,8 @@ export type OwnerPageContext =
       profile: UserProfile;
       tenantOwnerId: string;
       stations: StationOption[];
+      mustChangeCredentials: boolean;
+      credentialsClaimed: boolean;
     };
 
 /**
@@ -340,30 +379,36 @@ export async function getOwnerPageContext(
       profile,
       tenantOwnerId: profile.id,
       stations: [],
+      mustChangeCredentials: session.mustChangeCredentials,
+      credentialsClaimed: session.credentialsClaimed,
     };
   }
 
   if (profile.role === "superadmin") {
-    const stations = await listActiveOwnerStations();
-    if (stations.length === 0) {
+    try {
+      const { tenantOwnerId, stations } = await resolveSuperadminStation(
+        profile,
+        requestedStationId
+      );
+      return {
+        status: "ok",
+        profile,
+        tenantOwnerId,
+        stations,
+        mustChangeCredentials: false,
+        credentialsClaimed: false,
+      };
+    } catch (error) {
       return {
         status: "forbidden",
         role: profile.role,
         email: profile.email,
         reason:
-          "No active Owner station exists yet. Create an Owner account under Accounts & Roles first.",
+          error instanceof Error
+            ? error.message
+            : "This station cannot be accessed.",
       };
     }
-    const matched = requestedStationId
-      ? stations.find((s) => s.id === requestedStationId)
-      : null;
-
-    return {
-      status: "ok",
-      profile,
-      tenantOwnerId: matched ? matched.id : stations[0].id,
-      stations,
-    };
   }
 
   return {

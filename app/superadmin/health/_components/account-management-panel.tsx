@@ -1,7 +1,7 @@
 "use client";
 
-import { Eye, EyeOff, KeyRound, UserPlus, Users } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { Eye, EyeOff, KeyRound, Trash2, UserPlus, Users } from "lucide-react";
+import { useMemo, useState, type FormEvent } from "react";
 import { trackAction } from "@/app/_components/activity-tracker";
 import {
   EmptyState,
@@ -21,22 +21,17 @@ const ROLE_OPTIONS: { value: UserRole; label: string; hint: string }[] = [
   {
     value: "owner",
     label: "Owner",
-    hint: "Full station dashboard, inventory, staff management, and direct cashier access",
+    hint: "Full station dashboard, inventory, cashier management, and direct cashier access",
   },
   {
     value: "cashier",
     label: "Cashier",
-    hint: "Operates Walk-in Sales, Deliveries, Vendo Income, and Closing Shift",
-  },
-  {
-    value: "staff",
-    label: "Staff",
-    hint: "General station staff linked to an owner",
+    hint: "Operates Walk-in Sales, Deliveries, Monthly Vendo, and Closing Shift",
   },
   {
     value: "superadmin",
     label: "Superadmin",
-    hint: "Full system oversight, audit logs, accounts, plus direct Owner and Cashier access",
+    hint: "Full system oversight, audit logs, accounts, plus hierarchical access",
   },
 ];
 
@@ -64,22 +59,84 @@ export function AccountManagementPanel({
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [tableSuccess, setTableSuccess] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const owners = users.filter((u) => u.role === "owner" && u.is_active);
-  const isStaffRole = role === "cashier" || role === "staff";
+  const deletableUsers = useMemo(
+    () =>
+      users.filter(
+        (u) =>
+          u.id !== currentUserId &&
+          !(u.role === "owner" && Boolean(u.is_secured))
+      ),
+    [users, currentUserId]
+  );
+  const activeSelectedIds = useMemo(
+    () =>
+      deletableUsers
+        .filter((u) => selectedIds.includes(u.id))
+        .map((u) => u.id),
+    [deletableUsers, selectedIds]
+  );
+  const isStaffRole = role === "cashier";
   const resolvedCreateOwnerId =
     ownerId && owners.some((o) => o.id === ownerId)
       ? ownerId
       : (owners[0]?.id ?? "");
 
   function toggleRowSelect(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setConfirmingDelete(false);
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }
+
+  function toggleSelectAll() {
+    setConfirmingDelete(false);
+    const allIds = deletableUsers.map((u) => u.id);
+    const allChecked =
+      allIds.length > 0 && allIds.every((id) => selectedIds.includes(id));
+    setSelectedIds(allChecked ? [] : allIds);
+  }
+
+  async function handleConfirmDeleteSelected() {
+    if (activeSelectedIds.length === 0) return;
+    setDeleting(true);
+    setTableError(null);
+    setTableSuccess(null);
+
+    try {
+      const response = await fetch("/api/users", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: activeSelectedIds }),
+      });
+
+      const data = (await response.json()) as {
+        deletedCount?: number;
+        error?: string;
+      };
+
+      if (!response.ok) {
+        setTableError(data.error ?? "Unable to delete selected accounts.");
+        return;
+      }
+
+      const count = data.deletedCount ?? activeSelectedIds.length;
+      setSelectedIds([]);
+      setConfirmingDelete(false);
+      setTableSuccess(
+        `Deleted ${count} user ${count === 1 ? "account" : "accounts"}.`
+      );
+      await Promise.resolve(onUsersChanged());
+    } catch {
+      setTableError("Connection problem while deleting accounts.");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   async function handleCreateAccount(event: FormEvent<HTMLFormElement>) {
@@ -374,18 +431,65 @@ export function AccountManagementPanel({
 
       {/* Registered Accounts Table */}
       <div className="av-card p-6 lg:col-span-7">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-[var(--av-ink)]">
               Registered Accounts ({users.length})
             </h2>
             <p className="text-xs font-normal text-[var(--av-muted)]">
-              Manage assigned roles, owner station links, and active status.
+              Manage assigned roles, owner station links, active status, and deletions.
+              {activeSelectedIds.length > 0 && (
+                <> · {activeSelectedIds.length} selected</>
+              )}
             </p>
           </div>
-          {selectedIds.size > 0 && (
-            <StatusChip label={`${selectedIds.size} selected`} tone="solid" />
-          )}
+
+          {activeSelectedIds.length > 0 &&
+            (!confirmingDelete ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-red-500/40 bg-red-500/12 px-3.5 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-500/20 dark:text-red-300"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete Selected ({activeSelectedIds.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds([])}
+                  className="text-xs font-semibold text-[var(--av-muted)] hover:text-[var(--av-ink)]"
+                >
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-red-500/40 bg-red-500/10 py-1 pr-1 pl-3">
+                <span className="text-xs font-semibold text-red-700 dark:text-red-300">
+                  Delete {activeSelectedIds.length}{" "}
+                  {activeSelectedIds.length === 1 ? "account" : "accounts"}?
+                </span>
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={() => setConfirmingDelete(false)}
+                  className="rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3 py-1 text-xs font-semibold text-[var(--av-ink)] transition hover:bg-[var(--av-surface-subtle)] disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={() => void handleConfirmDeleteSelected()}
+                  className="inline-flex items-center gap-1 rounded-full bg-red-600 px-3.5 py-1 text-xs font-semibold text-white transition hover:bg-red-700 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  {deleting
+                    ? "Deleting..."
+                    : `Confirm Delete (${activeSelectedIds.length})`}
+                </button>
+              </div>
+            ))}
         </div>
 
         {tableError && (
@@ -394,6 +498,16 @@ export function AccountManagementPanel({
               tone="error"
               message={tableError}
               onDismiss={() => setTableError(null)}
+            />
+          </div>
+        )}
+
+        {tableSuccess && (
+          <div className="mt-4">
+            <NoticeBanner
+              tone="success"
+              message={tableSuccess}
+              onDismiss={() => setTableSuccess(null)}
             />
           </div>
         )}
@@ -408,7 +522,19 @@ export function AccountManagementPanel({
             <table className="w-full border-separate border-spacing-y-2 text-left text-xs">
               <thead>
                 <tr className="text-[11px] font-semibold uppercase tracking-wider text-[var(--av-muted)]">
-                  <th className="w-8 pb-1 pl-3" />
+                  <th className="w-8 pb-1 pl-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all deletable accounts"
+                      disabled={deletableUsers.length === 0}
+                      checked={
+                        deletableUsers.length > 0 &&
+                        deletableUsers.every((u) => selectedIds.includes(u.id))
+                      }
+                      onChange={toggleSelectAll}
+                      className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)] disabled:opacity-40"
+                    />
+                  </th>
                   <th className="px-3 pb-1">Account</th>
                   <th className="px-3 pb-1">Role</th>
                   <th className="px-3 pb-1">Owner Station</th>
@@ -419,6 +545,9 @@ export function AccountManagementPanel({
               <tbody>
                 {users.map((user) => {
                   const isSelf = user.id === currentUserId;
+                  const isSecuredOwner =
+                    user.role === "owner" && Boolean(user.is_secured);
+                  const isProtected = isSelf || isSecuredOwner;
                   const isBusy = updatingId === user.id;
 
                   return (
@@ -429,20 +558,26 @@ export function AccountManagementPanel({
                       <td className="rounded-l-2xl py-3 pl-3">
                         <input
                           type="checkbox"
-                          checked={selectedIds.has(user.id)}
+                          disabled={isProtected}
+                          checked={
+                            !isProtected && selectedIds.includes(user.id)
+                          }
                           onChange={() => toggleRowSelect(user.id)}
                           aria-label={`Select ${user.email}`}
-                          className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)]"
+                          className="h-4 w-4 rounded border-[var(--av-border-strong)] accent-[var(--av-accent)] disabled:opacity-35"
                         />
                       </td>
 
                       <td className="px-3 py-3">
-                        <div className="font-semibold text-[var(--av-ink)]">
-                          {user.full_name || "Unnamed User"}
+                        <div className="flex flex-wrap items-center gap-1.5 font-semibold text-[var(--av-ink)]">
+                          <span>{user.full_name || "Unnamed User"}</span>
                           {isSelf && (
-                            <span className="ml-1.5 rounded-full bg-[var(--av-accent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--av-accent-ink)]">
+                            <span className="rounded-full bg-[var(--av-accent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--av-accent-ink)]">
                               You
                             </span>
+                          )}
+                          {isSecuredOwner && (
+                            <StatusChip label="Owner Secured" tone="green" dot />
                           )}
                         </div>
                         <div className="text-[11px] font-normal text-[var(--av-muted)]">
@@ -451,7 +586,7 @@ export function AccountManagementPanel({
                       </td>
 
                       <td className="px-3 py-3">
-                        {isSelf ? (
+                        {isProtected ? (
                           <StatusChip label={user.role} tone="solid" />
                         ) : (
                           <select
@@ -475,7 +610,7 @@ export function AccountManagementPanel({
                       </td>
 
                       <td className="px-3 py-3">
-                        {user.role === "cashier" || user.role === "staff" ? (
+                        {user.role === "cashier" ? (
                           <select
                             aria-label={`Owner station for ${user.email}`}
                             value={user.owner_id ?? ""}
@@ -508,9 +643,9 @@ export function AccountManagementPanel({
                       </td>
 
                       <td className="rounded-r-2xl py-3 pr-3 text-right">
-                        {isSelf ? (
+                        {isProtected ? (
                           <span className="text-[11px] text-[var(--av-muted)]">
-                            Protected
+                            {isSecuredOwner ? "Private" : "Protected"}
                           </span>
                         ) : (
                           <RowActionMenu
@@ -525,6 +660,15 @@ export function AccountManagementPanel({
                                   void handleUpdateUser(user.id, user.email, {
                                     isActive: !user.is_active,
                                   }),
+                              },
+                              {
+                                label: "Delete Account",
+                                disabled: isBusy || deleting,
+                                emphasis: "muted",
+                                onClick: () => {
+                                  setSelectedIds([user.id]);
+                                  setConfirmingDelete(true);
+                                },
                               },
                             ]}
                           />

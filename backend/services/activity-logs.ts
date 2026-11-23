@@ -65,12 +65,7 @@ function sanitizeDetails(value: unknown, depth = 0): Json {
 }
 
 function normalizeRole(role?: string | null): ActivityActorRole {
-  if (
-    role === "superadmin" ||
-    role === "owner" ||
-    role === "cashier" ||
-    role === "staff"
-  ) {
+  if (role === "superadmin" || role === "owner" || role === "cashier") {
     return role;
   }
   return "anonymous";
@@ -274,8 +269,7 @@ export async function queryActivityLogs(
   for (const row of todayRows) {
     if (row.actor_email) uniqueActors.add(row.actor_email);
     if (row.actor_role === "owner") ownerActions += 1;
-    else if (row.actor_role === "cashier" || row.actor_role === "staff")
-      cashierActions += 1;
+    else if (row.actor_role === "cashier") cashierActions += 1;
     else if (row.actor_role === "superadmin") superadminActions += 1;
   }
 

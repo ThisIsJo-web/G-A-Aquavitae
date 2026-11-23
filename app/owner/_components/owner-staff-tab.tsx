@@ -26,7 +26,6 @@ export function OwnerStaffTab({
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"cashier" | "staff">("cashier");
   const [showPassword, setShowPassword] = useState(false);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -59,7 +58,7 @@ export function OwnerStaffTab({
           fullName: fullName.trim() || undefined,
           email: email.trim(),
           password,
-          role,
+          role: "cashier",
           ownerId: isSuperadmin ? stationOwnerId : undefined,
         }),
       });
@@ -71,7 +70,7 @@ export function OwnerStaffTab({
       if (!res.ok) {
         setFeedback({
           tone: "error",
-          message: payload.error ?? "Failed to create staff account.",
+          message: payload.error ?? "Failed to create cashier account.",
         });
         return;
       }
@@ -81,7 +80,7 @@ export function OwnerStaffTab({
       setPassword("");
       setFeedback({
         tone: "success",
-        message: `Account created for ${payload.user?.email ?? "staff member"}.`,
+        message: `Cashier account created for ${payload.user?.email ?? "cashier"}. They can now sign in directly to Cashier Station.`,
       });
       await refreshStaff();
     } catch {
@@ -91,20 +90,14 @@ export function OwnerStaffTab({
     }
   }
 
-  async function handleUpdateStaff(
-    member: OwnerStaffProfileDTO,
-    patch: {
-      isActive?: boolean;
-      role?: "cashier" | "staff";
-    }
-  ) {
+  async function handleToggleActive(member: OwnerStaffProfileDTO) {
     setFeedback(null);
     setBusyId(member.id);
     try {
       const res = await fetch(`/api/users/${member.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
+        body: JSON.stringify({ isActive: !member.is_active }),
       });
       const payload = (await res.json()) as {
         user?: OwnerStaffProfileDTO;
@@ -121,7 +114,7 @@ export function OwnerStaffTab({
       await refreshStaff();
       setFeedback({
         tone: "success",
-        message: `Updated ${member.full_name || member.email}.`,
+        message: `${member.is_active ? "Deactivated" : "Reactivated"} ${member.full_name || member.email}.`,
       });
     } catch {
       setFeedback({ tone: "error", message: "Connection error." });
@@ -140,23 +133,23 @@ export function OwnerStaffTab({
         />
       )}
 
-      {/* Create Staff Form */}
+      {/* Create Cashier Account Form */}
       <form onSubmit={handleCreate} className="av-card space-y-4 p-6">
         <div>
           <h2 className="text-base font-bold tracking-tight text-[var(--av-ink)]">
-            Add Station Staff Account
+            Add Cashier Account
           </h2>
           <p className="mt-0.5 text-xs text-[var(--av-muted)]">
-            Create logins for your cashiers and station helpers. You can also
-            open{" "}
+            Create logins for your station cashiers — they get immediate access
+            to{" "}
             <span className="font-semibold text-[var(--av-ink)]">
               Cashier Station
             </span>{" "}
-            directly anytime from the sidebar using your Owner account.
+            upon sign-in.
           </p>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-3">
           <div>
             <label
               htmlFor="staff-name"
@@ -224,24 +217,6 @@ export function OwnerStaffTab({
               </button>
             </div>
           </div>
-
-          <div>
-            <label
-              htmlFor="staff-role"
-              className="mb-1.5 block text-xs font-semibold text-[var(--av-ink)]"
-            >
-              Role
-            </label>
-            <select
-              id="staff-role"
-              value={role}
-              onChange={(e) => setRole(e.target.value as "cashier" | "staff")}
-              className="av-input w-full rounded-2xl px-3.5 py-2.5 text-xs font-semibold"
-            >
-              <option value="cashier">Cashier (POS &amp; Operations)</option>
-              <option value="staff">Staff</option>
-            </select>
-          </div>
         </div>
 
         <div className="flex justify-end border-t border-[var(--av-border)] pt-4">
@@ -251,27 +226,27 @@ export function OwnerStaffTab({
             className="av-btn-primary inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-xs font-semibold transition disabled:opacity-50"
           >
             <UserPlus className="h-4 w-4" />
-            {creating ? "Creating..." : "Create Staff Account"}
+            {creating ? "Creating..." : "Create Cashier Account"}
           </button>
         </div>
       </form>
 
-      {/* Team Directory Table */}
+      {/* Station Cashiers Table */}
       <section className="av-card p-6">
         <div className="mb-4">
           <h2 className="text-base font-bold tracking-tight text-[var(--av-ink)]">
-            Station Staff ({staff.length})
+            Station Cashiers ({staff.length})
           </h2>
           <p className="text-xs text-[var(--av-muted)]">
-            Manage Cashier and Staff accounts assigned to this station
+            Manage Cashier accounts assigned to this station
           </p>
         </div>
 
         {staff.length === 0 ? (
           <EmptyState
             icon={<Users className="h-5 w-5" />}
-            title="No staff accounts yet"
-            description="Create a Cashier account above for your counter staff."
+            title="No cashier accounts yet"
+            description="Create a Cashier account above for your counter operations."
           />
         ) : (
           <div className="overflow-x-auto">
@@ -286,69 +261,48 @@ export function OwnerStaffTab({
                 </tr>
               </thead>
               <tbody>
-                {staff.map((member) => {
-                  const actions = [
-                    {
-                      label:
-                        member.role === "cashier"
-                          ? "Change to Staff"
-                          : "Promote to Cashier",
-                      disabled: busyId === member.id,
-                      onClick: () =>
-                        void handleUpdateStaff(member, {
-                          role: member.role === "cashier" ? "staff" : "cashier",
-                        }),
-                    },
-                    {
-                      label: member.is_active
-                        ? "Deactivate Account"
-                        : "Reactivate Account",
-                      disabled: busyId === member.id,
-                      emphasis: member.is_active
-                        ? ("muted" as const)
-                        : ("default" as const),
-                      onClick: () =>
-                        void handleUpdateStaff(member, {
-                          isActive: !member.is_active,
-                        }),
-                    },
-                  ];
-
-                  return (
-                    <tr
-                      key={member.id}
-                      className="bg-[var(--av-surface-subtle)] font-medium text-[var(--av-ink)] transition hover:bg-[var(--av-surface-hover)]"
-                    >
-                      <td className="rounded-l-2xl px-4 py-3.5">
-                        <div className="font-semibold text-[var(--av-ink)]">
-                          {member.full_name || "Unnamed Staff"}
-                        </div>
-                        <div className="text-[11px] font-normal text-[var(--av-muted)]">
-                          {member.email}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <StatusChip
-                          label={member.role === "cashier" ? "Cashier" : "Staff"}
-                          tone="outline"
-                        />
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <StatusChip
-                          label={member.is_active ? "Active" : "Inactive"}
-                          tone={member.is_active ? "green" : "outline"}
-                          dot
-                        />
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3.5 tabular-nums text-[var(--av-ink-secondary)]">
-                        {new Date(member.created_at).toLocaleDateString()}
-                      </td>
-                      <td className="rounded-r-2xl px-4 py-3.5 text-right">
-                        <RowActionMenu actions={actions} />
-                      </td>
-                    </tr>
-                  );
-                })}
+                {staff.map((member) => (
+                  <tr
+                    key={member.id}
+                    className="bg-[var(--av-surface-subtle)] font-medium text-[var(--av-ink)] transition hover:bg-[var(--av-surface-hover)]"
+                  >
+                    <td className="rounded-l-2xl px-4 py-3.5">
+                      <div className="font-semibold text-[var(--av-ink)]">
+                        {member.full_name || "Unnamed Cashier"}
+                      </div>
+                      <div className="text-[11px] font-normal text-[var(--av-muted)]">
+                        {member.email}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <StatusChip label="Cashier" tone="outline" />
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <StatusChip
+                        label={member.is_active ? "Active" : "Inactive"}
+                        tone={member.is_active ? "green" : "outline"}
+                        dot
+                      />
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3.5 tabular-nums text-[var(--av-ink-secondary)]">
+                      {new Date(member.created_at).toLocaleDateString()}
+                    </td>
+                    <td className="rounded-r-2xl px-4 py-3.5 text-right">
+                      <RowActionMenu
+                        actions={[
+                          {
+                            label: member.is_active
+                              ? "Deactivate Account"
+                              : "Reactivate Account",
+                            disabled: busyId === member.id,
+                            emphasis: member.is_active ? "muted" : "default",
+                            onClick: () => void handleToggleActive(member),
+                          },
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

@@ -155,8 +155,8 @@ async function runCashierTests() {
     method: "POST",
     body: JSON.stringify({
       machineName: "Future Test Vendo",
-      periodType: "daily",
-      collectionDate: futureDate,
+      collectionMonth: "2099-12",
+      businessDate: futureDate,
       amount: 100,
     }),
   });
@@ -288,19 +288,20 @@ async function runCashierTests() {
     `status=${settleDel.status}`
   );
 
-  // 10. Vendo Collection
+  // 10. Monthly Vendo Collection
   const vendoRes = await client.request("/api/cashier/vendo", {
     method: "POST",
     body: JSON.stringify({
       machineName: "QA Vendo #1",
-      periodType: "daily",
       amount: 145.5,
-      notes: "QA coin count",
+      notes: "QA monthly coin count",
     }),
   });
   assert(
-    vendoRes.status === 201 && vendoRes.json?.collection?.amount === 145.5,
-    "Vendo daily coin income logged accurately (₱145.50)",
+    vendoRes.status === 201 &&
+      vendoRes.json?.collection?.amount === 145.5 &&
+      vendoRes.json?.collection?.period_type === "monthly",
+    "Monthly Vendo coin income logged accurately (₱145.50)",
     `status=${vendoRes.status}`
   );
 

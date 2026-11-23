@@ -71,7 +71,6 @@ function formatRoleLabel(role: string): string {
   if (role === "superadmin") return "Superadmin";
   if (role === "owner") return "Owner";
   if (role === "cashier") return "Cashier";
-  if (role === "staff") return "Staff";
   return "Guest";
 }
 
@@ -328,7 +327,6 @@ export function ActivityAuditPanel({ refreshSignal }: ActivityAuditPanelProps) {
               <option value="superadmin">Superadmin</option>
               <option value="owner">Owner</option>
               <option value="cashier">Cashier</option>
-              <option value="staff">Staff</option>
             </select>
           </div>
 

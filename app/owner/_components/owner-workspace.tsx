@@ -4,6 +4,7 @@ import {
   Activity,
   Building2,
   FileSpreadsheet,
+  KeyRound,
   LayoutDashboard,
   Package,
   Receipt,
@@ -24,6 +25,7 @@ import {
 } from "@/app/_components/ui/app-shell";
 import { NoticeBanner } from "@/app/_components/ui/monochrome-controls";
 import type { StationOptionDTO, UserRole } from "@/app/cashier/_components/types";
+import { OwnerAccountSecurityModal } from "./owner-account-security-modal";
 import { OwnerAuditTab } from "./owner-audit-tab";
 import {
   OwnerCustomersTab,
@@ -57,6 +59,8 @@ interface OwnerWorkspaceProps {
   initialStaff: OwnerStaffProfileDTO[];
   initialAuditCount: number;
   initialPulseVersion: string;
+  mustChangeCredentials: boolean;
+  credentialsClaimed: boolean;
 }
 
 type OwnerTab =
@@ -101,8 +105,8 @@ const TAB_TITLES: Record<OwnerTab, { title: string; subtitle: string }> = {
     subtitle: "Regular delivery customers and open unpaid balances",
   },
   staff: {
-    title: "Staff Accounts",
-    subtitle: "Create and manage Cashier and Staff logins for your station",
+    title: "Cashier Accounts",
+    subtitle: "Create and manage Cashier logins for your station",
   },
 };
 
@@ -114,9 +118,23 @@ export function OwnerWorkspace({
   initialStaff,
   initialAuditCount,
   initialPulseVersion,
+  mustChangeCredentials: initialMustChangeCredentials,
+  credentialsClaimed: initialCredentialsClaimed,
 }: OwnerWorkspaceProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<OwnerTab>("overview");
+  const [accountName, setAccountName] = useState<string | null>(
+    currentUser.fullName
+  );
+  const [accountEmail, setAccountEmail] = useState(currentUser.email);
+  const [mustChangeCredentials, setMustChangeCredentials] = useState(
+    initialMustChangeCredentials
+  );
+  const [credentialsClaimed, setCredentialsClaimed] = useState(
+    initialCredentialsClaimed
+  );
+  const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  const [securityNotice, setSecurityNotice] = useState<string | null>(null);
   const [selectedStation, setSelectedStation] = useState(stationOwnerId);
   const [customersView, setCustomersView] =
     useState<OwnerCustomersView>("customers");
@@ -405,7 +423,7 @@ export function OwnerWorkspace({
     },
     {
       id: "staff",
-      label: "Staff Accounts",
+      label: "Cashier Accounts",
       icon: <UserCog className="h-4 w-4" />,
       badge: staff.length,
     },
@@ -443,13 +461,38 @@ export function OwnerWorkspace({
       onSelectNav={(id) => setActiveTab(id as OwnerTab)}
       secondaryLinks={secondaryLinks}
       user={{
-        name: currentUser.fullName || "Station Owner",
-        email: currentUser.email,
+        name: accountName || "Station Owner",
+        email: accountEmail,
       }}
       onSignOut={handleSignOut}
       signingOut={signingOut}
       headerActions={
         <>
+          {currentUser.role === "owner" && (
+            <button
+              type="button"
+              onClick={() => {
+                trackAction({
+                  module: "accounts",
+                  action: "Opened Owner Email & Password Security settings",
+                  controlLabel: "Account Security",
+                });
+                setSecurityModalOpen(true);
+              }}
+              className="av-btn-outline inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold transition"
+              title="Update your Email / Gmail and Password"
+            >
+              <KeyRound className="h-3.5 w-3.5 text-[var(--av-blue-ink)]" />
+              <span>Account</span>
+              {credentialsClaimed && (
+                <span
+                  aria-label="Account secured"
+                  className="h-1.5 w-1.5 rounded-full bg-emerald-500"
+                />
+              )}
+            </button>
+          )}
+
           {currentUser.role === "superadmin" && stations.length > 1 && (
             <label className="inline-flex items-center gap-1.5 rounded-full border border-[var(--av-border-strong)] bg-[var(--av-surface)] px-3 py-2 text-xs font-semibold text-[var(--av-ink)]">
               <Building2 className="h-3.5 w-3.5 text-[var(--av-muted)]" />
@@ -537,8 +580,15 @@ export function OwnerWorkspace({
         </>
       }
       topBanner={
-        (loadError || snapshot.schemaMissing) && (
+        (loadError || snapshot.schemaMissing || securityNotice) && (
           <div className="space-y-3">
+            {securityNotice && (
+              <NoticeBanner
+                tone="success"
+                message={securityNotice}
+                onDismiss={() => setSecurityNotice(null)}
+              />
+            )}
             {loadError && (
               <NoticeBanner
                 tone="error"
@@ -625,6 +675,28 @@ export function OwnerWorkspace({
           onStaffChange={setStaff}
         />
       )}
+
+      {currentUser.role === "owner" &&
+        (mustChangeCredentials || securityModalOpen) && (
+          <OwnerAccountSecurityModal
+            currentName={accountName}
+            currentEmail={accountEmail}
+            mandatory={mustChangeCredentials}
+            isSecured={credentialsClaimed}
+            onClose={() => setSecurityModalOpen(false)}
+            onUpdated={({ email: nextEmail, fullName: nextName }) => {
+              setAccountEmail(nextEmail);
+              setAccountName(nextName);
+              setMustChangeCredentials(false);
+              setCredentialsClaimed(true);
+              setSecurityModalOpen(false);
+              setSecurityNotice(
+                `Your profile (${nextName || "Owner"} · ${nextEmail}) and security settings have been saved. Your account is private and protected from Superadmin access.`
+              );
+              router.refresh();
+            }}
+          />
+        )}
     </AppShell>
   );
 }

@@ -75,7 +75,7 @@ const TAB_TITLES: Record<CashierTab, { title: string; subtitle: string }> = {
   },
   vendo: {
     title: "Vendo Income",
-    subtitle: "Daily and weekly water vendo coin collections",
+    subtitle: "Monthly water vendo coin collections",
   },
   shift: {
     title: "Closing Shift Tally",
@@ -116,6 +116,7 @@ export function CashierWorkspace({
   const [refreshing, setRefreshing] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const prevPendingCountRef = useRef(initialCorrections.pendingCount);
+  const lastFocusSyncRef = useRef(0);
 
   const isElevatedActor =
     currentUser.role === "owner" || currentUser.role === "superadmin";
@@ -225,6 +226,24 @@ export function CashierWorkspace({
     stationOnlyQuery,
   ]);
 
+  // Zero-polling cross-session sync: refresh workspace once when returning to tab (throttled 5s)
+  useEffect(() => {
+    function handleResume() {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastFocusSyncRef.current < 5_000) return;
+      lastFocusSyncRef.current = now;
+      void reloadWorkspace(businessDate);
+    }
+
+    window.addEventListener("focus", handleResume);
+    document.addEventListener("visibilitychange", handleResume);
+    return () => {
+      window.removeEventListener("focus", handleResume);
+      document.removeEventListener("visibilitychange", handleResume);
+    };
+  }, [businessDate, reloadWorkspace]);
+
   async function handleDateChange(rawDate: string) {
     const safeDate = clampIsoDate(rawDate, minDate, maxDate);
     setBusinessDate(safeDate);
@@ -275,7 +294,7 @@ export function CashierWorkspace({
       id: "vendo",
       label: "Vendo Income",
       icon: <Coins className="h-4 w-4" />,
-      badge: formatPHP(vendo.summary.todayDailyTotal),
+      badge: formatPHP(vendo.summary.thisMonthTotal),
     },
     {
       id: "shift",

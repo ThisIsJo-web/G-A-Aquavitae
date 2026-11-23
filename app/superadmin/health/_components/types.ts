@@ -45,7 +45,6 @@ export interface AccountSummaryDTO {
     superadmin: number;
     owner: number;
     cashier: number;
-    staff: number;
   };
 }
 
@@ -114,6 +113,7 @@ export interface ManagedUserDTO {
   avatar_url: string | null;
   role: UserRole;
   is_active: boolean;
+  is_secured?: boolean;
   owner_id: string | null;
   created_by: string | null;
   created_at: string;
